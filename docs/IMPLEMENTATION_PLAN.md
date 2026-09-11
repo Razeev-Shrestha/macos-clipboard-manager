@@ -43,13 +43,29 @@ The commit and remote history are the authoritative publication receipt.
 
 ## Gate B — Persistent history and search
 
-- [ ] Add SQLite schema migrations and transactional repository operations.
-- [ ] Persist metadata and payload references; reopen database without losing history or pin state.
-- [ ] Enforce defaults of 1,000 unpinned items and 30 days; preserve pinned entries.
-- [ ] Maintain local text/source/URL/filename/metadata search and type/pinned filters consistently.
-- [ ] Wire asynchronous persistence and interactive search into the app.
-- [ ] Test migrations, dedup, retention, pin preservation, restart, deletion and search/filter behavior.
-- [ ] Independently review, fix, build/test, commit and push accepted Gate B.
+Implementation choices for this gate:
+
+- A `ClipboardHistoryRepository` actor opens SQLite and performs all database work away from the main actor.
+  `history(query:filter:limit:)` returns metadata rows without payload data; `item(id:)` hydrates a selected payload.
+- `ClipboardItem.payload` may be absent in a metadata row. Restore rejects an unhydrated item without changing
+  the pasteboard. Capture values still contain the original representation data.
+- Retention uses `lastUsedAt`, preserving all pins in addition to the unpinned limit. Schema/FTS changes are transactional.
+- A small main-actor observable controller serializes capture writes, ignores stale search responses, and drains
+  pending writes before shutdown. UI rendering never performs SQLite work.
+- Debug named-pasteboard runs use an isolated local database. Production storage uses Application Support.
+- Lightweight, conservative text classification supplies meaningful Code filtering; no content is executed or rewritten.
+
+- [x] Add SQLite schema migrations and transactional repository operations.
+- [x] Persist metadata and text/URL payloads; reopen database without losing history or pin state.
+- [x] Enforce defaults of 1,000 unpinned items and 30 days; preserve pinned entries.
+- [x] Maintain local text/source/URL/metadata search and type/pinned filters consistently.
+- [x] Wire asynchronous persistence and interactive search into the app.
+- [x] Test migrations, dedup, retention, pin preservation, restart, deletion and search/filter behavior.
+- [x] Independently review, fix, build/test, and verify native restart/search behavior.
+
+Filename capture/search and external blob storage remain in Gate E with file/image support.
+Publication: commit `feat: add persistent clipboard history and search` and push `main`.
+The commit and remote history are the authoritative publication receipt.
 
 ## Gate C — Keyboard workflow
 

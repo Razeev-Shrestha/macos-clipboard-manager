@@ -121,7 +121,9 @@ public struct ClipboardItem: Codable, Equatable, Hashable, Identifiable, Sendabl
     public let byteSize: Int
     public let payloadMetadata: ClipboardPayloadMetadata
     public let payloadBlobReference: String?
-    public let payload: ClipboardPayload
+    /// The full payload is present for a freshly captured item and an `item(id:)`
+    /// lookup. Persistent history and search rows leave it unloaded.
+    public let payload: ClipboardPayload?
 
     public var sourceBundleIdentifier: String? {
         sourceBundleID
@@ -166,7 +168,7 @@ public struct ClipboardItem: Codable, Equatable, Hashable, Identifiable, Sendabl
         byteSize: Int,
         payloadMetadata: ClipboardPayloadMetadata,
         payloadBlobReference: String?,
-        payload: ClipboardPayload
+        payload: ClipboardPayload?
     ) {
         self.id = id
         self.contentHash = contentHash
@@ -197,7 +199,7 @@ public struct ClipboardItem: Codable, Equatable, Hashable, Identifiable, Sendabl
             byteSize: incoming.byteSize,
             payloadMetadata: incoming.payloadMetadata,
             payloadBlobReference: incoming.payloadBlobReference ?? payloadBlobReference,
-            payload: incoming.payload
+            payload: incoming.payload ?? payload
         )
     }
 

@@ -141,7 +141,10 @@ public final class NSPasteboardMonitor: NSObject {
     /// change count.  A write that races another process is not suppressed.
     @discardableResult
     public func restore(_ item: ClipboardItem) -> Bool {
-        restore(item.payload)
+        guard let payload = item.payload else {
+            return false
+        }
+        return restore(payload)
     }
 
     @discardableResult

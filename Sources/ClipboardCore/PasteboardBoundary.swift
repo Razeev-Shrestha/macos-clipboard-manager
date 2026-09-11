@@ -269,17 +269,17 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
             }
 
             let data = item.data(forType: textType) ?? Data(text.utf8)
+            let textURL = validURL(from: text)
             let payload = ClipboardPayload(
                 primaryTypeIdentifier: textType.rawValue,
                 representations: [ClipboardRepresentation(typeIdentifier: textType.rawValue, data: data)],
                 availableTypeIdentifiers: availableTypeIdentifiers,
                 plainText: text,
-                url: validURL(from: text)
+                url: textURL
             )
-            let isURL = validURL(from: text) != nil
             let capture = ClipboardCapture(
                 payload: payload,
-                primaryType: isURL ? .url : .text,
+                primaryType: textURL != nil ? .url : ClipboardTextClassifier.isLikelyCode(text) ? .code : .text,
                 searchableText: text,
                 source: source
             )
