@@ -1,7 +1,7 @@
 # Implementation status
 
-Full V1 goal: **in progress**. Gates A–D have passed their quality gates.
-Full V1 functionality and distribution remain Gates E–F.
+Full V1 goal: **in progress**. Gates A–E have passed their quality gates.
+Final appearance, performance measurement and distribution remain Gate F.
 
 | Gate | Status | Evidence / remaining work |
 | --- | --- | --- |
@@ -9,7 +9,7 @@ Full V1 functionality and distribution remain Gates E–F.
 | B — Persistence/search | Accepted | 38 tests, clean signed native build, independent review, private-board search/filter/restart checks passed. Git milestone: `feat: add persistent clipboard history and search`. |
 | C — Keyboard workflow | Accepted | Independent review, 59 tests and clean signed build pass. User confirmed normal-build search results and global shortcut close. Native copy/navigation/preview and earlier editor-return checks pass. |
 | D — Automatic paste | Accepted | Independent review, 84 tests, clean signed build and strict signature check pass. Native trusted insertion, explicit copy-only and denied-destination fallback pass with synthetic content. |
-| E — Full V1 | Not started | Gate D accepted; menu/settings, rich payloads, privacy and reliability are next. |
+| E — Full V1 | Accepted | Independent App/Core review, 145 warning-as-error tests, clean signed build, and scoped native rich/privacy/control/restart checks pass. |
 | F — Polish/distribution | Not started | Requires accepted Gate E and full final audit. |
 
 ## Environment
@@ -173,6 +173,75 @@ is lexical; validation used a newly created directory, not a symlink. External b
   clean signed build. Gate D is accepted on the scoped evidence above; E and F remain incomplete.
 - Publication uses `feat: add automatic paste and focus restoration` on `main`; Git history and the
   checked remote commit are the publication receipt. Generated fixtures and build artifacts stay ignored.
+- Published Gate D as `ff6db690f86b899a667a35cf62dface1e55c94fe`; the remote hash matched and the
+  worktree was clean before Gate E began.
+
+## Gate E acceptance — 2026-09-12
+
+- Implemented ordered native rich/image/file capture, private external payload storage and schema v2 migration,
+  asynchronous enrichment/history controls, settings/privacy policy, login service, menu access and display recovery.
+- Independent App and Core review each built or tested the integrated candidate; the Core review passed
+  134 warning-as-error tests. All accepted findings were fixed and re-reviewed before the final full run and acceptance.
+- Main's integrated signed Debug build passed. The first native run used only named board
+  `com.example.ClipboardManager.gate-e-e01`, ignored synthetic storage and its isolated settings suite.
+- Native capture produced text, rich text, two images, ordered file/folder references and a resumed fixture.
+  Paused content was not replayed; an excluded synthetic source and a concealed second item were both omitted.
+- CmdReturn restored exact original representation bytes for rich text, both images and both ordered file references.
+  The history and FTS stayed at six rows without internal-write duplicates. Image selection showed the correct
+  small and large previews; file names and source metadata were visible.
+- Native launch-at-login registration reported Enabled, then unregister reported Disabled. The test leaves login
+  disabled. This verifies registration behavior, not an actual subsequent login. Existing Accessibility reads Enabled.
+- A temporary CmdOptionShiftY shortcut was recorded and the default restored. Hiding the menu icon left the process
+  alive with regular activation policy; native reopening still worked. Menu visibility was restored afterward.
+- CmdP pinned the external image; the Pinned filter retained it. A selected rich-text item was deleted. Single-item
+  confirmation is being added following review and must be rechecked. Cancelling clear preserved all five remaining
+  rows; confirming clear-unpinned retained only the pinned external image and its blob.
+- The first run quit normally with exit status zero. SQLite reports schema 2, integrity `ok`, one pinned content row,
+  one FTS row and one external blob. Restart and final clear-all checks remain for the next reviewed build.
+- Native QA found SQL NULL search text becoming an empty image title; a repository fix and regression pass.
+  Accepted review fixes address recorder arming/accessibility, shortcut and action error presentation,
+  pointer preview behavior, serialized thumbnail work, payload integrity, policy cancellation and lifecycle delivery.
+
+
+- Final clean signed Debug build and strict signature verification pass. All **145 warning-as-error
+  tests** pass; production, project and test source hashes stayed unchanged during that build.
+- Relaunch retained the pinned external image, exclusion settings and default recording state. The image
+  title now reads Image; pointer selection followed by Right opens its correct bounded preview, and
+  printable input returns to search. A custom shortcut survived another normal quit/restart and the
+  panel showed that configured shortcut. The recorder exposes its label/value/help to Accessibility,
+  arms on Return, disarms after one recording, and permits CmdQ while still focused but unarmed.
+- CmdDelete and preview Delete both show the single-item confirmation. Cancel retains the item;
+  confirming a separate synthetic text deletion removes it from results. Final Clear Everything removes
+  the pinned image as requested. Both final quits exit zero, application logs are empty, and SQLite
+  reports schema 2, integrity `ok`, zero content rows, zero FTS rows and zero blob files.
+- The default shortcut and menu visibility were restored; launch at login remains disabled. Native testing
+  used only the dedicated named board and synthetic storage. Actual second-display unplug, physical
+  sleep/wake and subsequent login remain untested on this one-display interactive environment. Software
+  geometry, lifecycle and service-boundary tests cover their deterministic behavior. Direct status-menu
+  targeting is limited by the available automation; the native menu structure and delegated action paths
+  were inspected, and corresponding Settings/panel actions were exercised.
+
+
+- The final App review passes, including Objective-C exposure of native menu validation, truthful shortcut
+  rollback/hints and storage-ready keyboard/control guards. Retention now prunes cached metadata with the
+  same age/count policy after capture, unpin, recopy and policy updates, preserving pins. Aged unpin and
+  capture-age eviction regressions pass; successful unpin still reports success when retention evicts it.
+- After these final deltas, the full **144-test** warning-as-error run and clean signed Debug build pass.
+  Strict signature verification and unchanged build-time source hashes pass. The exact app then captured
+  rich text, pinned/unpinned it, displayed the preview and copied the original RTF/plain bytes exactly.
+  Internal copy kept one content/FTS row. Confirmed final clearing returned content/FTS/blob counts to zero;
+  normal quit exited zero and its log stayed empty.
+
+
+- Final focused Core review has no medium/high blocker. Cached recopy timestamps now advance before
+  pruning, and all mutation cache updates complete inside the FIFO database task before later captures.
+  The deterministic recopy regression verifies membership and timestamp parity across age/count pruning.
+- Main's final full **145-test** warning-as-error suite, clean signed Debug build, strict signature check,
+  and unchanged source-hash check pass. The exact app copied and recopied original rich-text bytes,
+  advanced recency and retained exactly one content/FTS row. Final confirmed clearing left zero
+  rows/index entries/blobs; integrity is `ok`, the app log is empty, and normal quit exited zero.
+- Gate E is accepted with the native-environment limitations recorded above. Publication uses
+  `feat: complete v1 clipboard functionality` on `main`; Git history and the checked remote are the receipt.
 
 ## Outstanding evidence
 
@@ -180,5 +249,5 @@ Gate A checks used isolated named pasteboards. The real General Clipboard consen
 interaction was not changed or manually exercised; access policy transitions were tested through the
 actual boundary with injected policy values. No production clipboard payload was used for verification.
 
-Full menu/settings, rich content, exclusions, multiple displays/sleep-wake, final appearance/performance and distribution
+Unavailable native display/sleep/login interactions, final appearance/performance and distribution
 remain tracked in `IMPLEMENTATION_PLAN.md` and `REQUIREMENTS_CHECKLIST.md`.

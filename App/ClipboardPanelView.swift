@@ -1,4 +1,6 @@
+import AppKit
 import ClipboardCore
+import ImageIO
 import SwiftUI
 
 struct ClipboardPanelView: View {
@@ -6,6 +8,7 @@ struct ClipboardPanelView: View {
     @ObservedObject var controller: ClipboardHistoryController
     @FocusState private var isSearchFocused: Bool
     @State private var focusRequestGeneration = 0
+    @State private var clearConfirmation = false
 
     init(model: ClipboardPanelViewModel) {
         self.model = model
@@ -36,6 +39,26 @@ struct ClipboardPanelView: View {
         .onChange(of: isSearchFocused) { _, isFocused in
             model.searchFocusChanged(isFocused)
         }
+        .confirmationDialog(
+            "Delete this clipboard item?",
+            isPresented: Binding(
+                get: { model.pendingDeletionID != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        model.cancelDeleteSelected()
+                    }
+                }
+            )
+        ) {
+            Button("Delete", role: .destructive) {
+                model.confirmDeleteSelected()
+            }
+            Button("Cancel", role: .cancel) {
+                model.cancelDeleteSelected()
+            }
+        } message: {
+            Text("This item will be removed from local clipboard history.")
+        }
     }
 
     private var header: some View {
@@ -57,7 +80,7 @@ struct ClipboardPanelView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Clear clipboard search")
                 }
-                Text("⌘⇧V")
+                Text(model.shortcutHint)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
@@ -125,7 +148,16 @@ struct ClipboardPanelView: View {
             if model.isPreviewVisible, let selectedItem = model.selectedItem(in: controller.items) {
                 HSplitView {
                     historyList
-                    ClipboardPreview(item: selectedItem, isCopying: model.isCopying, copy: model.copySelected)
+                    ClipboardPreview(
+                        item: model.previewItem ?? selectedItem,
+                        isLoading: model.isLoadingPreview,
+                        previewError: model.previewError,
+                        isCopying: model.isCopying,
+                        canMutateHistory: model.canMutateHistory,
+                        copy: model.copySelected,
+                        togglePin: model.togglePinSelected,
+                        delete: model.deleteSelected
+                    )
                         .frame(minWidth: 300, idealWidth: 380)
                 }
             } else {
@@ -193,6 +225,13 @@ struct ClipboardPanelView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityLabel(shortcutStatus)
+            }
+
+            if let historyMutationFailure = model.historyMutationFailure {
+                Label(historyMutationFailure, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(historyMutationFailure)
             } else if controller.accessState == .denied {
                 Label("Clipboard access is denied. Enable it in System Settings, then relaunch Clipboard Manager.", systemImage: "hand.raised")
                     .font(.caption)
@@ -207,6 +246,29 @@ struct ClipboardPanelView: View {
                 .font(.caption)
                 .accessibilityHint("Requests Accessibility access for automatic paste.")
             }
+
+            HStack(spacing: 10) {
+                Button("Clear Unpinned") {
+                    clearConfirmation = true
+                }
+                .disabled(!model.canMutateHistory)
+                .buttonStyle(.link)
+                .font(.caption)
+                .confirmationDialog("Clear unpinned clipboard history?", isPresented: $clearConfirmation) {
+                    Button("Clear Unpinned", role: .destructive) {
+                        model.clearHistory(keepingPinned: true)
+                    }
+                    Button("Clear Everything", role: .destructive) {
+                        model.clearHistory(keepingPinned: false)
+                    }
+                } message: {
+                    Text("Pinned items can be retained or you can remove all clipboard history.")
+                }
+                Text("⌘P Pin")
+                Text("⌘⌫ Delete")
+            }
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
 
             HStack(spacing: 14) {
                 Text("↑↓ Navigate")
@@ -261,7 +323,7 @@ private struct ClipboardHistoryRow: View {
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 5) {
-                    Text(item.sourceAppName ?? "Unknown App")
+                    Text(item.sourceAppName ?? item.sourceBundleID ?? "Unknown App")
                     Text("·")
                     Text(item.createdAt, style: .relative)
                     Text("·")
@@ -311,8 +373,13 @@ private struct ClipboardHistoryRow: View {
 
 private struct ClipboardPreview: View {
     let item: ClipboardItem
+    let isLoading: Bool
+    let previewError: String?
     let isCopying: Bool
+    let canMutateHistory: Bool
     let copy: () -> Void
+    let togglePin: () -> Void
+    let delete: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -322,18 +389,24 @@ private struct ClipboardPreview: View {
                 Spacer()
                 Button("Copy", action: copy)
                     .disabled(isCopying)
+                Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
+                Button("Delete", role: .destructive, action: delete)
+                    .disabled(!canMutateHistory)
             }
 
             ScrollView {
-                Text(item.searchableText ?? "This clipboard item has no text preview yet.")
-                    .font(previewFont)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                if let previewError {
+                    ContentUnavailableView("Preview Unavailable", systemImage: "exclamationmark.triangle", description: Text(previewError))
+                } else if isLoading {
+                    ProgressView("Loading preview…")
+                } else {
+                    previewContent
+                }
             }
             .padding(10)
             .background(.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-            LabeledContent("Source", value: item.sourceAppName ?? "Unknown App")
+            LabeledContent("Source", value: item.sourceAppName ?? item.sourceBundleID ?? "Unknown App")
             LabeledContent("Copied", value: item.createdAt.formatted(date: .abbreviated, time: .shortened))
             LabeledContent("Type", value: item.primaryType.displayName)
             if item.primaryType == .url, let url = item.payload?.url?.absoluteString ?? item.searchableText {
@@ -346,6 +419,32 @@ private struct ClipboardPreview: View {
         .background(.regularMaterial)
     }
 
+    @ViewBuilder
+    private var previewContent: some View {
+        if item.primaryType == .image,
+           let data = item.payload?.representations.first(where: {
+               $0.typeIdentifier == NSPasteboard.PasteboardType.png.rawValue
+                   || $0.typeIdentifier == NSPasteboard.PasteboardType.tiff.rawValue
+           })?.data
+        {
+            BoundedClipboardImage(identity: "\(item.id.uuidString):\(item.contentHash)", data: data)
+        } else if item.primaryType == .files,
+           let items = item.payload?.items
+        {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, payloadItem in
+                    Text(payloadItem.url?.lastPathComponent ?? payloadItem.url?.absoluteString ?? "File")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(item.payload?.plainText ?? item.searchableText ?? "This clipboard item has no text preview yet.")
+                .font(previewFont)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        }
+    }
+
     private var previewFont: Font {
         switch item.primaryType {
         case .code, .url:
@@ -353,6 +452,62 @@ private struct ClipboardPreview: View {
         default:
             .body
         }
+    }
+}
+
+private struct BoundedClipboardImage: View {
+    let identity: String
+    let data: Data
+    @State private var image: NSImage?
+    @State private var didFail = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else if didFail {
+                ContentUnavailableView("Image Preview Unavailable", systemImage: "exclamationmark.triangle")
+            } else {
+                ProgressView("Loading image…")
+            }
+        }
+        .task(id: identity) {
+            image = nil
+            didFail = false
+            let decoded = await ClipboardPreviewImageDecoder.shared.thumbnail(data: data)
+            guard !Task.isCancelled else { return }
+            if let decoded {
+                image = NSImage(cgImage: decoded, size: .zero)
+            } else {
+                didFail = true
+            }
+        }
+    }
+}
+
+/// This dedicated actor serializes selected-image thumbnail work off the main
+/// actor. A cancellation that arrives after ImageIO begins cannot interrupt that
+/// native call, but queued canceled requests return before decoding.
+private actor ClipboardPreviewImageDecoder {
+    static let shared = ClipboardPreviewImageDecoder()
+
+    func thumbnail(data: Data) -> CGImage? {
+        guard !Task.isCancelled,
+              let source = CGImageSourceCreateWithData(data as CFData, nil)
+        else {
+            return nil
+        }
+        let options: CFDictionary = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 768,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ] as CFDictionary
+        guard !Task.isCancelled else {
+            return nil
+        }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options)
     }
 }
 

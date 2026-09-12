@@ -170,7 +170,7 @@ final class PersistenceTests: XCTestCase {
     func testFutureSchemaFailsClosedAndFailedMigrationRollsBackVersion() async throws {
         let future = try DatabaseFixture()
         defer { future.remove() }
-        try execute("PRAGMA user_version = 2", at: future.databaseURL)
+        try execute("PRAGMA user_version = 3", at: future.databaseURL)
         let futureRepository = ClipboardHistoryRepository(databaseURL: future.databaseURL)
         await XCTAssertThrowsErrorAsync(try await futureRepository.open()) { error in
             XCTAssertEqual(error as? ClipboardHistoryRepositoryError, .unsupportedSchemaVersion)
@@ -239,6 +239,50 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(persisted?.sourceAppName, "Original")
         XCTAssertEqual(persisted?.lastUsedAt, date(1))
         XCTAssertEqual(persisted?.payload?.plainText, "synthetic transactional fixture")
+        await repository.close()
+    }
+
+    func testUpdateRetentionPrunesUnpinnedRowsWithoutExpiringPins() async throws {
+        let fixture = try DatabaseFixture()
+        defer { fixture.remove() }
+        let repository = ClipboardHistoryRepository(databaseURL: fixture.databaseURL)
+        try await repository.open()
+
+        let pinned = try await repository.record(makeItem(text: "synthetic retained pin", at: 1), now: date(1))
+        _ = try await repository.setPinned(true, for: pinned.id, now: date(1))
+        let expired = try await repository.record(makeItem(text: "synthetic expired row", at: 2), now: date(2))
+
+        try await repository.updateRetention(
+            ClipboardHistoryRetention(maximumUnpinnedItems: 1, maximumUnpinnedAge: 10),
+            now: date(100)
+        )
+
+        let rows = try await repository.history(limit: 10)
+        XCTAssertEqual(rows.map(\.id), [pinned.id])
+        let expiredItem = try await repository.item(id: expired.id)
+        XCTAssertNil(expiredItem)
+        await repository.close()
+    }
+
+    func testMetadataHistoryPreservesMissingSearchableText() async throws {
+        let fixture = try DatabaseFixture()
+        defer { fixture.remove() }
+        let repository = ClipboardHistoryRepository(databaseURL: fixture.databaseURL)
+        try await repository.open()
+        let payload = ClipboardPayload(
+            primaryTypeIdentifier: "public.png",
+            representations: [ClipboardRepresentation(typeIdentifier: "public.png", data: Data(repeating: 0x42, count: 8))],
+            availableTypeIdentifiers: ["public.png"]
+        )
+        let image = ClipboardItem(
+            capture: ClipboardCapture(payload: payload, primaryType: .image),
+            createdAt: Date()
+        )
+
+        let stored = try await repository.record(image, now: Date())
+        let rows = try await repository.history()
+        XCTAssertEqual(rows.map(\.id), [stored.id])
+        XCTAssertNil(rows.first?.searchableText)
         await repository.close()
     }
 

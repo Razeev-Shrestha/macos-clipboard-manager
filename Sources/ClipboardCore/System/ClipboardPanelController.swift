@@ -99,6 +99,12 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
             name: NSApplication.didResignActiveNotification,
             object: NSApp
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidChangeScreenParameters(_:)),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: NSApp
+        )
     }
 
     deinit {
@@ -204,6 +210,29 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
         return NSRect(origin: origin, size: size)
     }
 
+    /// Chooses a currently attached visible frame for a panel whose former screen
+    /// may have been removed. A frame containing the panel center wins, then the
+    /// greatest overlap, then the caller's current-pointer fallback.
+    static func recoveryVisibleFrame(
+        for panelFrame: NSRect,
+        visibleFrames: [NSRect],
+        preferredVisibleFrame: NSRect?
+    ) -> NSRect? {
+        guard !visibleFrames.isEmpty else {
+            return nil
+        }
+        let panelCenter = NSPoint(x: panelFrame.midX, y: panelFrame.midY)
+        if let containingCenter = visibleFrames.first(where: { $0.contains(panelCenter) }) {
+            return containingCenter
+        }
+        if let overlapping = visibleFrames.max(by: { intersectionArea(panelFrame, $0) < intersectionArea(panelFrame, $1) }),
+           intersectionArea(panelFrame, overlapping) > 0
+        {
+            return overlapping
+        }
+        return preferredVisibleFrame ?? visibleFrames.first
+    }
+
     static func shouldRestoreFocus(
         restoringFocus: Bool,
         previousProcessIdentifier: pid_t?,
@@ -232,6 +261,31 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
             return
         }
         close(restoringFocus: false)
+    }
+
+    @objc
+    private func applicationDidChangeScreenParameters(_ notification: Notification) {
+        guard isVisible else {
+            return
+        }
+        let visibleFrames = NSScreen.screens.map(\.visibleFrame)
+        guard let visibleFrame = Self.recoveryVisibleFrame(
+            for: panel.frame,
+            visibleFrames: visibleFrames,
+            preferredVisibleFrame: preferredScreen()?.visibleFrame
+        ) else {
+            return
+        }
+        panel.setFrame(
+            Self.panelFrame(for: visibleFrame, expanded: isPreviewExpanded),
+            display: false,
+            animate: false
+        )
+    }
+
+    private static func intersectionArea(_ lhs: NSRect, _ rhs: NSRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        return max(0, intersection.width) * max(0, intersection.height)
     }
 
     private func capturePreviousApplication() {

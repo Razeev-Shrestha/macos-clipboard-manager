@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 
@@ -51,9 +52,17 @@ public final class ClipboardHistoryController: ObservableObject {
         results.items
     }
 
+    /// Internal visibility is intentional: the monitor cache is an implementation
+    /// detail and is exposed only to core tests that verify cache invalidation.
+    var transientCacheItems: [ClipboardItem] {
+        monitor.history.items
+    }
+
     private let monitor: NSPasteboardMonitor
     private let repository: ClipboardHistoryRepository
-    private var writeTask: Task<Void, Never>?
+    private let now: () -> Date
+    private var mutationTail: Task<Bool, Never>?
+    private var pendingCaptureTasks: [UUID: (generation: UInt64, task: Task<Bool, Never>)] = [:]
     private var searchTask: Task<Void, Never>?
     private var queryGeneration = 0
     private var hasOpenedRepository = false
@@ -61,12 +70,32 @@ public final class ClipboardHistoryController: ObservableObject {
     private var isShuttingDown = false
     private var hasStorageFailure = false
 
-    public init(
+    public convenience init(
         pasteboard: any ClipboardPasteboard,
-        repository: ClipboardHistoryRepository
+        repository: ClipboardHistoryRepository,
+        retention: ClipboardHistoryRetention = .default
+    ) {
+        self.init(
+            pasteboard: pasteboard,
+            repository: repository,
+            retention: retention,
+            now: { Date() }
+        )
+    }
+
+    init(
+        pasteboard: any ClipboardPasteboard,
+        repository: ClipboardHistoryRepository,
+        retention: ClipboardHistoryRetention,
+        now: @escaping () -> Date
     ) {
         self.repository = repository
-        monitor = NSPasteboardMonitor(pasteboard: pasteboard)
+        self.now = now
+        monitor = NSPasteboardMonitor(
+            pasteboard: pasteboard,
+            now: now,
+            retention: retention
+        )
         monitor.onPollResult = { [weak self] result, _, accessState in
             guard let self else {
                 return
@@ -75,8 +104,8 @@ public final class ClipboardHistoryController: ObservableObject {
             if self.accessState != accessState {
                 self.accessState = accessState
             }
-            if case .recorded(let update) = result {
-                self.enqueuePersistence(of: update.item)
+            if case .captured(let candidate) = result {
+                self.enqueueCapture(candidate)
             }
         }
     }
@@ -88,12 +117,13 @@ public final class ClipboardHistoryController: ObservableObject {
     ) {
         self.init(
             pasteboard: pasteboard,
-            repository: ClipboardHistoryRepository(databaseURL: databaseURL, retention: retention)
+            repository: ClipboardHistoryRepository(databaseURL: databaseURL, retention: retention),
+            retention: retention
         )
     }
 
     deinit {
-        writeTask?.cancel()
+        mutationTail?.cancel()
         searchTask?.cancel()
     }
 
@@ -136,6 +166,30 @@ public final class ClipboardHistoryController: ObservableObject {
         monitor.stop()
     }
 
+    public var isRecordingPaused: Bool {
+        monitor.isRecordingPaused
+    }
+
+    public func setRecordingPaused(_ paused: Bool) {
+        monitor.setRecordingPaused(paused)
+        cancelStaleCaptureTasks()
+    }
+
+    public func setExcludedBundleIdentifiers(_ identifiers: Set<String>) {
+        monitor.setExcludedBundleIdentifiers(identifiers)
+        cancelStaleCaptureTasks()
+    }
+
+    public func handleWake() {
+        monitor.handleWake()
+        cancelStaleCaptureTasks()
+    }
+
+    public func handleSleep() {
+        monitor.handleSleep()
+        cancelStaleCaptureTasks()
+    }
+
     @discardableResult
     public func pollNow() -> ClipboardMonitorPollResult {
         monitor.pollNow()
@@ -158,13 +212,20 @@ public final class ClipboardHistoryController: ObservableObject {
             return nil
         }
 
+        _ = await mutationTail?.value
+        guard !isShuttingDown, !hasStorageFailure, !Task.isCancelled else {
+            return nil
+        }
+
         let item: ClipboardItem?
         do {
             item = try await repository.item(id: id)
-        } catch {
-            guard !isShuttingDown, !Task.isCancelled else {
-                return nil
+        } catch let error as ClipboardHistoryRepositoryError {
+            if error != .payloadUnavailable {
+                recordStorageFailure()
             }
+            return nil
+        } catch {
             recordStorageFailure()
             return nil
         }
@@ -175,7 +236,13 @@ public final class ClipboardHistoryController: ObservableObject {
             return nil
         }
 
-        enqueueUsageUpdate(for: id, at: Date())
+        let actionDate = now()
+        _ = await enqueueMutation({ repository in
+            try await repository.markUsed(id: id, at: actionDate)
+        }, onSuccess: { [weak self] in
+            self?.monitor.markUsed(at: actionDate, for: id)
+            self?.monitor.pruneRetention(now: actionDate)
+        })
         return receipt
     }
 
@@ -185,11 +252,79 @@ public final class ClipboardHistoryController: ObservableObject {
         monitor.isCurrent(receipt)
     }
 
+    /// Hydrates one selected row for an expanded preview. Metadata rows remain
+    /// available when the payload/blob is unavailable, and item-local errors are
+    /// intentionally returned to the caller instead of poisoning storage state.
+    public func loadItem(id: UUID) async throws -> ClipboardItem? {
+        guard hasOpenedRepository, storageState == .ready, !isShuttingDown else {
+            return nil
+        }
+        _ = await mutationTail?.value
+        try Task.checkCancellation()
+        let item = try await repository.item(id: id)
+        try Task.checkCancellation()
+        return item
+    }
+
+    @discardableResult
+    public func setPinned(_ pinned: Bool, for id: UUID) async -> Bool {
+        let actionDate = now()
+        return await enqueueMutation({ repository in
+            let item = try await repository.setPinned(pinned, for: id, now: actionDate)
+            // The repository may remove an aged row immediately after a
+            // successful unpin, so a nil returned metadata row still means the
+            // requested unpin transaction completed.
+            return item != nil || !pinned
+        }, onSuccess: { [weak self] in
+            self?.monitor.setPinned(pinned, for: id, now: actionDate)
+        })
+    }
+
+    @discardableResult
+    public func deleteItem(id: UUID) async -> Bool {
+        return await enqueueMutation({ repository in
+            try await repository.delete(id: id)
+            return true
+        }, onSuccess: { [weak self] in
+            self?.monitor.removeCachedItem(id: id)
+        })
+    }
+
+    @discardableResult
+    public func clearHistory(keepingPinned: Bool = false) async -> Bool {
+        return await enqueueMutation({ repository in
+            try await repository.clear(keepingPinned: keepingPinned)
+            return true
+        }, onSuccess: { [weak self] in
+            self?.monitor.clearCachedItems(keepingPinned: keepingPinned)
+        })
+    }
+
+    @discardableResult
+    public func updateRetention(
+        _ retention: ClipboardRetentionSettings,
+        now: Date = Date()
+    ) async -> Bool {
+        guard retention.isValid else {
+            return false
+        }
+        let policy = ClipboardHistoryRetention(
+            maximumUnpinnedItems: retention.maximumUnpinnedItems,
+            maximumUnpinnedAge: retention.maximumUnpinnedAge
+        )
+        return await enqueueMutation({ repository in
+            try await repository.updateRetention(policy, now: now)
+            return true
+        }, onSuccess: { [weak self] in
+            self?.monitor.setRetention(policy, now: now)
+        })
+    }
+
     /// Waits for accepted captures and then refreshes the currently selected query.
     /// This is useful for deterministic tests and for future explicit refresh UI.
     public func flush() async {
-        let pendingWrite = writeTask
-        await pendingWrite?.value
+        let pendingMutation = mutationTail
+        _ = await pendingMutation?.value
         guard hasOpenedRepository, !isShuttingDown, !hasStorageFailure else {
             return
         }
@@ -205,8 +340,8 @@ public final class ClipboardHistoryController: ObservableObject {
 
         isShuttingDown = true
         monitor.stop()
-        let pendingWrite = writeTask
-        await pendingWrite?.value
+        let pendingMutation = mutationTail
+        _ = await pendingMutation?.value
 
         searchTask?.cancel()
         let pendingSearch = searchTask
@@ -219,43 +354,98 @@ public final class ClipboardHistoryController: ObservableObject {
         storageState = .inactive
     }
 
-    private func enqueuePersistence(of item: ClipboardItem) {
+    private func enqueueCapture(_ candidate: ClipboardCaptureCandidate) {
         guard hasOpenedRepository, !isShuttingDown, !hasStorageFailure else {
             return
         }
 
-        let previousWrite = writeTask
+        // Assign this task to the one mutation tail before any detached work is
+        // started. Later delete/clear actions therefore wait for this accepted
+        // candidate and cannot be followed by a late capture resurrection.
+        let previousMutation = mutationTail
         let repository = repository
-        writeTask = Task { [weak self] in
-            await previousWrite?.value
-            guard !Task.isCancelled else {
-                return
+        let monitor = monitor
+        let token = UUID()
+        let task = Task { @MainActor [weak self] in
+            defer {
+                self?.finishCaptureTask(token)
             }
-
             do {
-                _ = try await repository.record(item)
-                guard !Task.isCancelled else {
-                    return
+                _ = await previousMutation?.value
+                try Task.checkCancellation()
+                let item = await Self.processCapture(
+                    candidate.snapshot.capture,
+                    capturedAt: candidate.capturedAt
+                )
+                try Task.checkCancellation()
+                guard let self,
+                      self.monitor.currentCaptureGeneration == candidate.generation
+                else {
+                    return false
                 }
-                self?.didPersistWrite()
+
+                let stored = try await repository.record(item, now: candidate.capturedAt)
+                // A policy change may cancel this task while the repository actor
+                // is writing. The repository performs its own pre-write/commit
+                // checks; this final check prevents a canceled completion from
+                // repopulating the transient cache.
+                try Task.checkCancellation()
+                monitor.recordPersisted(stored, now: candidate.capturedAt)
+                self.didPersistWrite()
+                return true
+            } catch is CancellationError {
+                // Policy invalidation is an expected capture discard and must not
+                // turn the controller's durable storage state into .failed.
+                return false
             } catch {
                 self?.didFailStorageOperation()
+                return false
             }
+        }
+        pendingCaptureTasks[token] = (generation: candidate.generation, task: task)
+        mutationTail = task
+    }
+
+    private func cancelStaleCaptureTasks() {
+        let currentGeneration = monitor.currentCaptureGeneration
+        for pending in pendingCaptureTasks.values where pending.generation != currentGeneration {
+            pending.task.cancel()
         }
     }
 
-    private func enqueueUsageUpdate(for id: UUID, at date: Date) {
-        let previousWrite = writeTask
+    private func finishCaptureTask(_ token: UUID) {
+        pendingCaptureTasks.removeValue(forKey: token)
+    }
+
+    private func enqueueMutation(
+        _ operation: @escaping @Sendable (ClipboardHistoryRepository) async throws -> Bool,
+        onSuccess: @escaping @MainActor @Sendable () -> Void = {}
+    ) async -> Bool {
+        guard hasOpenedRepository, !isShuttingDown, !hasStorageFailure else {
+            return false
+        }
+
+        let previousMutation = mutationTail
         let repository = repository
-        writeTask = Task { [weak self] in
-            await previousWrite?.value
+        let task = Task { @MainActor [weak self] in
+            _ = await previousMutation?.value
+            guard !Task.isCancelled else {
+                return false
+            }
             do {
-                _ = try await repository.markUsed(id: id, at: date)
+                let changed = try await operation(repository)
+                if changed {
+                    onSuccess()
+                }
                 self?.didPersistWrite()
+                return changed
             } catch {
                 self?.didFailStorageOperation()
+                return false
             }
         }
+        mutationTail = task
+        return await task.value
     }
 
     private func didPersistWrite() {
@@ -340,5 +530,149 @@ public final class ClipboardHistoryController: ObservableObject {
         hasStorageFailure = true
         monitor.stop()
         storageState = .failed
+    }
+
+    private nonisolated static func processCapture(
+        _ capture: ClipboardCapture,
+        capturedAt: Date
+    ) async -> ClipboardItem {
+        await Task.detached(priority: .utility) {
+            let enrichedCapture = enrichCapture(capture)
+            return ClipboardItem(
+                capture: enrichedCapture,
+                createdAt: capturedAt,
+                lastUsedAt: capturedAt
+            )
+        }.value
+    }
+
+    private nonisolated static func enrichCapture(_ capture: ClipboardCapture) -> ClipboardCapture {
+        var payload = capture.payload
+        var searchableText = capture.searchableText
+
+        if let items = payload.items {
+            var enrichedItems = [ClipboardPayloadItem]()
+            var derivedSearchableParts = [String]()
+            for item in items {
+                let itemText = item.plainText ?? rtfText(in: item)
+                if let itemText, !itemText.isEmpty {
+                    derivedSearchableParts.append(itemText)
+                } else if let itemURL = item.url {
+                    // File pasteboard items should remain searchable by filename;
+                    // the boundary already uses this same URL-derived component.
+                    let searchableURLComponent = itemURL.lastPathComponent.isEmpty
+                        ? itemURL.absoluteString
+                        : itemURL.lastPathComponent
+                    derivedSearchableParts.append(searchableURLComponent)
+                }
+                enrichedItems.append(
+                    ClipboardPayloadItem(
+                        primaryTypeIdentifier: item.primaryTypeIdentifier,
+                        representations: item.representations,
+                        availableTypeIdentifiers: item.availableTypeIdentifiers,
+                        plainText: item.plainText ?? itemText,
+                        url: item.url
+                    )
+                )
+            }
+            searchableText = mergeSearchableText(
+                existing: searchableText,
+                additions: derivedSearchableParts
+            )
+            payload = ClipboardPayload(
+                primaryTypeIdentifier: payload.primaryTypeIdentifier,
+                representations: payload.representations,
+                availableTypeIdentifiers: payload.availableTypeIdentifiers,
+                plainText: payload.plainText,
+                url: payload.url,
+                items: enrichedItems
+            )
+        } else if payload.plainText == nil,
+                  let plainText = rtfText(in: payload)
+        {
+            searchableText = mergeSearchableText(existing: searchableText, additions: [plainText])
+            payload = ClipboardPayload(
+                primaryTypeIdentifier: payload.primaryTypeIdentifier,
+                representations: payload.representations,
+                availableTypeIdentifiers: payload.availableTypeIdentifiers,
+                plainText: plainText,
+                url: payload.url
+            )
+        }
+
+        let primaryType: ClipboardPrimaryType
+        switch capture.primaryType {
+        case .text, .code:
+            if let searchableText, let url = URL(string: searchableText), url.scheme != nil {
+                primaryType = .url
+            } else if ClipboardTextClassifier.isLikelyCode(searchableText ?? "") {
+                primaryType = .code
+            } else {
+                primaryType = .text
+            }
+        default:
+            primaryType = capture.primaryType
+        }
+
+        return ClipboardCapture(
+            payload: payload,
+            primaryType: primaryType,
+            searchableText: searchableText,
+            source: capture.source
+        )
+    }
+
+    private nonisolated static func mergeSearchableText(
+        existing: String?,
+        additions: [String]
+    ) -> String? {
+        let existing = existing?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var merged = existing
+        for addition in additions {
+            let trimmed = addition.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !merged.contains(trimmed) else {
+                continue
+            }
+            if !merged.isEmpty {
+                merged.append(" ")
+            }
+            merged.append(trimmed)
+        }
+        return merged.isEmpty ? nil : merged
+    }
+
+    private nonisolated static func rtfText(in payload: ClipboardPayload) -> String? {
+        let data = payload.representations.first {
+            $0.typeIdentifier == NSPasteboard.PasteboardType.rtf.rawValue
+        }?.data
+        guard let data else {
+            return nil
+        }
+        return rtfString(data)
+    }
+
+    private nonisolated static func rtfText(in item: ClipboardPayloadItem) -> String? {
+        let data = item.representations.first {
+            $0.typeIdentifier == NSPasteboard.PasteboardType.rtf.rawValue
+        }?.data
+        guard let data else {
+            return nil
+        }
+        return rtfString(data)
+    }
+
+    private nonisolated static func rtfString(_ data: Data) -> String? {
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.rtf
+        ]
+        guard let attributed = try? NSAttributedString(
+            data: data,
+            options: options,
+            documentAttributes: nil
+        ) else {
+            return nil
+        }
+        let text = attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 }

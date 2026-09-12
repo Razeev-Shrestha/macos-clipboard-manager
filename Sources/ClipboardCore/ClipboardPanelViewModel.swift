@@ -12,26 +12,39 @@ public final class ClipboardPanelViewModel: ObservableObject {
     @Published public private(set) var listOwnsKeyboardFocus = false
     @Published public private(set) var isCopying = false
     @Published public var shortcutStatus: String?
+    @Published public private(set) var shortcutHint = "⌘⇧V"
     @Published public private(set) var copyFailure: String?
     @Published public private(set) var pasteStatus: String?
+    @Published public private(set) var historyMutationFailure: String?
+    @Published public private(set) var pendingDeletionID: UUID?
     @Published public private(set) var canAutomaticallyPaste = false
     @Published public private(set) var visibleItemIDs: [UUID] = []
+    @Published public private(set) var previewItem: ClipboardItem?
+    @Published public private(set) var isLoadingPreview = false
+    @Published public private(set) var previewError: String?
 
     public var onPreviewVisibilityChanged: ((Bool) -> Void)?
     public var onRequestClose: (() -> Void)?
     public var onPasteRequested: ((UUID, ClipboardPasteIntent) -> Void)?
     public var onRequestAccessibilityAccess: (() -> Void)?
+    public var onPinRequested: ((UUID) -> Void)?
+    public var onDeleteRequested: ((UUID) -> Void)?
+    public var onClearHistoryRequested: ((Bool) -> Void)?
 
     public let controller: ClipboardHistoryController
     private var selection = ClipboardSelectionState()
     private var displayedQuery = ""
     private var displayedFilter: ClipboardHistoryFilter = .all
+    private var previewLoadTask: Task<Void, Never>?
+    private var previewLoadGeneration = 0
+    private var isPanelPresented = false
 
     public init(controller: ClipboardHistoryController) {
         self.controller = controller
     }
 
     public func prepareForOpening(itemIDs: [UUID]) {
+        isPanelPresented = true
         selection.resetForOpening(itemIDs: itemIDs)
         reconcileVisibleItems(with: itemIDs)
         synchronizeSelection()
@@ -40,7 +53,9 @@ public final class ClipboardPanelViewModel: ObservableObject {
     }
 
     public func didClose() {
+        isPanelPresented = false
         listOwnsKeyboardFocus = false
+        cancelPreviewLoad()
     }
 
     /// Accepts a controller publication whose query and filter were captured
@@ -73,8 +88,8 @@ public final class ClipboardPanelViewModel: ObservableObject {
 
     public func select(_ id: UUID?) {
         selection.select(id)
+        listOwnsKeyboardFocus = true
         synchronizeSelection()
-        requestSearchFocus()
     }
 
     public func requestSearchFocus() {
@@ -94,6 +109,10 @@ public final class ClipboardPanelViewModel: ObservableObject {
 
     public func requestAccessibilityAccess() {
         onRequestAccessibilityAccess?()
+    }
+
+    public func updateShortcutHint(_ hint: String) {
+        shortcutHint = hint
     }
 
     public func receivePasteOutcome(_ outcome: ClipboardPasteOutcome) {
@@ -134,6 +153,16 @@ public final class ClipboardPanelViewModel: ObservableObject {
         if isCommand, event.charactersIgnoringModifiers?.lowercased() == "k" {
             controller.query = ""
             requestSearchFocus()
+            return true
+        }
+
+        if isCommand, event.charactersIgnoringModifiers?.lowercased() == "p" {
+            togglePinSelected()
+            return true
+        }
+
+        if isCommand, event.keyCode == 51 || event.keyCode == 117 {
+            requestDeleteSelected()
             return true
         }
 
@@ -210,6 +239,56 @@ public final class ClipboardPanelViewModel: ObservableObject {
         beginAction(id: selectedID, intent: .paste)
     }
 
+    public func togglePinSelected() {
+        guard canMutateHistory, hasCurrentResults, let selectedID else {
+            return
+        }
+        onPinRequested?(selectedID)
+    }
+
+    public func requestDeleteSelected() {
+        guard canMutateHistory, hasCurrentResults, let selectedID else {
+            return
+        }
+        historyMutationFailure = nil
+        pendingDeletionID = selectedID
+    }
+
+    public func confirmDeleteSelected() {
+        guard let pendingDeletionID else {
+            return
+        }
+        self.pendingDeletionID = nil
+        guard canMutateHistory, hasCurrentResults, selectedID == pendingDeletionID else {
+            return
+        }
+        onDeleteRequested?(pendingDeletionID)
+    }
+
+    public func cancelDeleteSelected() {
+        pendingDeletionID = nil
+    }
+
+    public func deleteSelected() {
+        requestDeleteSelected()
+    }
+
+    public func receiveHistoryMutationResult(_ didSucceed: Bool, action: String) {
+        historyMutationFailure = didSucceed ? nil : "Couldn’t \(action). Try again."
+    }
+
+    public var canMutateHistory: Bool {
+        controller.storageState == .ready
+    }
+
+    public func clearHistory(keepingPinned: Bool) {
+        guard canMutateHistory else {
+            return
+        }
+        historyMutationFailure = nil
+        onClearHistoryRequested?(keepingPinned)
+    }
+
     private func beginAction(id: UUID, intent: ClipboardPasteIntent) {
         guard !isCopying else {
             return
@@ -233,6 +312,46 @@ public final class ClipboardPanelViewModel: ObservableObject {
         if previousPreview != isPreviewVisible {
             onPreviewVisibilityChanged?(isPreviewVisible)
         }
+        updatePreviewLoad()
+    }
+
+    private func updatePreviewLoad() {
+        cancelPreviewLoad()
+        guard isPanelPresented, isPreviewVisible, let selectedID else {
+            return
+        }
+
+        previewLoadGeneration &+= 1
+        let generation = previewLoadGeneration
+        isLoadingPreview = true
+        previewLoadTask = Task { [weak self, controller] in
+            let item: ClipboardItem?
+            do {
+                item = try await controller.loadItem(id: selectedID)
+            } catch {
+                item = nil
+            }
+            guard !Task.isCancelled,
+                  let self,
+                  generation == self.previewLoadGeneration,
+                  self.isPreviewVisible,
+                  self.selectedID == selectedID
+            else {
+                return
+            }
+            self.previewItem = item
+            self.previewError = item == nil ? "Preview unavailable for this item." : nil
+            self.isLoadingPreview = false
+        }
+    }
+
+    private func cancelPreviewLoad() {
+        previewLoadGeneration &+= 1
+        previewLoadTask?.cancel()
+        previewLoadTask = nil
+        previewItem = nil
+        previewError = nil
+        isLoadingPreview = false
     }
 
     private func visibleNumber(for event: NSEvent) -> Int? {

@@ -8,47 +8,64 @@ struct ClipboardManagerApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            ClipboardSettingsView(delegate: appDelegate)
         }
     }
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     let controller: ClipboardHistoryController
+    let settings: ClipboardSettingsStore
+    let launchAtLogin = LaunchAtLoginController()
 
     private static let autoPasteProbeBundleIdentifier = "com.example.ClipboardManager.AutoPasteProbe"
 
-    private let panelModel: ClipboardPanelViewModel
+    let panelModel: ClipboardPanelViewModel
     private let isSyntheticPasteboardRun: Bool
     private let permittedPasteTargetURL: URL?
     private var panel: ClipboardPanelController?
     private var shortcut: GlobalClipboardShortcut?
     private var pasteCoordinator: ClipboardPasteCoordinator?
+    private var statusItem: NSStatusItem?
+    private var settingsWindowController: NSWindowController?
+    private let lifecycleObserver = ClipboardLifecycleObserver()
+    private var appliedShortcutConfiguration: GlobalClipboardShortcutConfiguration?
+    private var hasStartedController = false
     private var isTerminating = false
 
     override init() {
         let configuration = Self.makeConfiguration()
+        let settings = ClipboardSettingsStore(defaults: configuration.defaults)
+        self.settings = settings
         controller = ClipboardHistoryController(
             pasteboard: configuration.pasteboard,
-            databaseURL: configuration.databaseURL
+            databaseURL: configuration.databaseURL,
+            retention: settings.value.repositoryRetention
         )
         panelModel = ClipboardPanelViewModel(controller: controller)
         isSyntheticPasteboardRun = configuration.isSyntheticPasteboardRun
         permittedPasteTargetURL = configuration.permittedPasteTargetURL
         super.init()
+        lifecycleObserver.onWillSleep = { [weak controller] in controller?.handleSleep() }
+        lifecycleObserver.onDidWake = { [weak controller] in controller?.handleWake() }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installPanelIfNeeded()
-        installShortcut()
+        apply(settings.value)
+        settings.onChange = { [weak self] value in self?.apply(value) }
+        lifecycleObserver.start()
 
-        Task { [weak controller] in
-            await controller?.start()
+        Task { [weak self] in
+            guard let self else { return }
+            await controller.start()
+            configureStatusItem(visible: settings.value.menuBarVisible)
+            guard !isTerminating else { return }
+            hasStartedController = true
+            await applyRetention(settings.value)
         }
 
-        // Gate C intentionally opens once at launch: there is no menu-bar entry yet.
-        panel?.show()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -64,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isTerminating = true
         shortcut?.unregister()
         pasteCoordinator?.shutdown()
+        lifecycleObserver.stop()
         Task { [weak self] in
             await self?.controller.shutdown()
             sender.reply(toApplicationShouldTerminate: true)
@@ -142,13 +160,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.pasteCoordinator?.begin(itemID: itemID, intent: intent, target: target)
         }
         panelModel.onRequestAccessibilityAccess = { [weak self] in
-            guard let self else {
-                return
+            self?.requestAccessibilityAccess()
+        }
+        panelModel.onPinRequested = { [weak self] itemID in
+            guard let self,
+                  let item = self.controller.items.first(where: { $0.id == itemID })
+            else { return }
+            let action = item.isPinned ? "unpin this item" : "pin this item"
+            Task { [weak self] in
+                guard let self else { return }
+                let didUpdate = await controller.setPinned(!item.isPinned, for: itemID)
+                panelModel.receiveHistoryMutationResult(didUpdate, action: action)
             }
-            self.pasteCoordinator?.requestAccessibilityAccess()
-            self.panelModel.updateAutomaticPasteAvailability(
-                self.pasteCoordinator?.canAutomaticallyPaste ?? false
-            )
+        }
+        panelModel.onDeleteRequested = { [weak self] itemID in
+            Task { [weak self] in
+                guard let self else { return }
+                let didDelete = await controller.deleteItem(id: itemID)
+                panelModel.receiveHistoryMutationResult(didDelete, action: "delete this item")
+            }
+        }
+        panelModel.onClearHistoryRequested = { [weak self] keepingPinned in
+            self?.clearHistory(keepingPinned: keepingPinned)
         }
     }
 
@@ -164,8 +197,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return targetURL.standardizedFileURL == permittedPasteTargetURL
     }
 
-    private func installShortcut() {
-        let shortcut = GlobalClipboardShortcut()
+    @discardableResult
+    private func installShortcut(
+        configuration: GlobalClipboardShortcutConfiguration
+    ) -> GlobalClipboardShortcutConfiguration? {
+        if appliedShortcutConfiguration == configuration {
+            return configuration
+        }
+        let oldShortcut = shortcut
+        oldShortcut?.unregister()
+        let shortcut = GlobalClipboardShortcut(configuration: configuration)
         shortcut.onPressed = { [weak self] in
             self?.panel?.toggle()
         }
@@ -174,8 +215,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try shortcut.register()
             panelModel.shortcutStatus = nil
             self.shortcut = shortcut
+            appliedShortcutConfiguration = configuration
+            return configuration
         } catch {
-            panelModel.shortcutStatus = "⌘⇧V is unavailable because another app is using it. Open Clipboard Manager from the Dock to use its panel."
+            let hadPreviousShortcut = oldShortcut != nil
+            var restored = false
+            if let oldShortcut {
+                do {
+                    try oldShortcut.register()
+                    restored = true
+                } catch {
+                    restored = false
+                }
+            }
+            if !restored {
+                self.shortcut = nil
+                appliedShortcutConfiguration = nil
+            }
+            if restored, let appliedShortcutConfiguration,
+               settings.value.globalShortcut != appliedShortcutConfiguration
+            {
+                settings.update { $0.globalShortcut = appliedShortcutConfiguration }
+            }
+            if restored {
+                panelModel.shortcutStatus = "The selected shortcut is unavailable. The previous shortcut remains active; open Clipboard Manager from the menu bar or Dock."
+            } else if hadPreviousShortcut {
+                panelModel.shortcutStatus = "The selected shortcut is unavailable and the previous shortcut could not be restored. Open Clipboard Manager from the Dock."
+            } else {
+                panelModel.shortcutStatus = "The selected shortcut is unavailable. Open Clipboard Manager from the menu bar or Dock."
+            }
+            return restored ? appliedShortcutConfiguration : nil
         }
     }
 
@@ -184,6 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let databaseURL: URL
         let isSyntheticPasteboardRun: Bool
         let permittedPasteTargetURL: URL?
+        let defaults: UserDefaults
     }
 
     private static func makeConfiguration() -> Configuration {
@@ -204,7 +274,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ),
                 databaseURL: testConfiguration.databaseURL,
                 isSyntheticPasteboardRun: true,
-                permittedPasteTargetURL: testConfiguration.permittedPasteTargetURL
+                permittedPasteTargetURL: testConfiguration.permittedPasteTargetURL,
+                defaults: testConfiguration.defaults
             )
         }
         #endif
@@ -216,7 +287,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ),
             databaseURL: productionDatabaseURL(),
             isSyntheticPasteboardRun: false,
-            permittedPasteTargetURL: nil
+            permittedPasteTargetURL: nil,
+            defaults: .standard
         )
     }
 
@@ -240,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pasteboardName: String
         let databaseURL: URL
         let permittedPasteTargetURL: URL?
+        let defaults: UserDefaults
     }
 
     /// Test flags are deliberately all-or-nothing. An incomplete or unsafe flag
@@ -306,10 +379,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             permittedPasteTargetURL = nil
         }
 
+        let suiteSeed = "\(boardName)|\(directoryURL.path)"
+        let suiteName = "com.example.ClipboardManager.tests.\(ClipboardHasher.sha256(data: Data(suiteSeed.utf8)))"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            fatalError("Unable to create isolated Debug settings storage.")
+        }
+
         return DebugTestConfiguration(
             pasteboardName: boardName,
             databaseURL: directoryURL.appendingPathComponent("history.sqlite", isDirectory: false),
-            permittedPasteTargetURL: permittedPasteTargetURL
+            permittedPasteTargetURL: permittedPasteTargetURL,
+            defaults: defaults
         )
     }
 
@@ -329,4 +409,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return arguments[valueIndex]
     }
     #endif
+
+    func openPanel() {
+        panel?.show()
+    }
+
+    func toggleRecording() {
+        settings.update { $0.recordingPaused.toggle() }
+    }
+
+    func clearHistory(keepingPinned: Bool) {
+        Task { [weak self] in
+            guard let self else { return }
+            let didClear = await controller.clearHistory(keepingPinned: keepingPinned)
+            panelModel.receiveHistoryMutationResult(didClear, action: "clear clipboard history")
+        }
+    }
+
+    func updateLaunchAtLogin(_ enabled: Bool) {
+        let status = launchAtLogin.setEnabled(enabled)
+        settings.update { $0.launchAtLogin = status == .enabled }
+    }
+
+    func requestAccessibilityAccess() {
+        pasteCoordinator?.requestAccessibilityAccess()
+        refreshAccessibilityStatus()
+    }
+
+    func refreshAccessibilityStatus() {
+        panelModel.updateAutomaticPasteAvailability(pasteCoordinator?.canAutomaticallyPaste ?? false)
+    }
+
+    private func apply(_ value: ClipboardManagerSettings) {
+        controller.setRecordingPaused(value.recordingPaused)
+        controller.setExcludedBundleIdentifiers(value.excludedBundleIdentifiers)
+        configureStatusItem(visible: value.menuBarVisible)
+        NSApp.setActivationPolicy(value.menuBarVisible ? .accessory : .regular)
+        let activeShortcut = installShortcut(configuration: value.globalShortcut)
+        panelModel.updateShortcutHint(
+            activeShortcut.map { ShortcutPresentation.text(for: $0) } ?? "Shortcut unavailable"
+        )
+        guard hasStartedController else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.applyRetention(value)
+        }
+    }
+
+    private func applyRetention(_ value: ClipboardManagerSettings) async {
+        _ = await controller.updateRetention(value.retention)
+    }
+
+    private func configureStatusItem(visible: Bool) {
+        guard visible else {
+            if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
+            statusItem = nil
+            return
+        }
+        let item = statusItem ?? NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: "Clipboard Manager")
+        let menu = NSMenu()
+        menu.autoenablesItems = true
+        menu.addItem(withTitle: "Open Clipboard", action: #selector(openClipboardFromMenu), keyEquivalent: "")
+        menu.addItem(withTitle: settings.value.recordingPaused ? "Resume Recording" : "Pause Recording", action: #selector(toggleRecordingFromMenu), keyEquivalent: "")
+        menu.addItem(.separator())
+        let clearHistoryItem = menu.addItem(
+            withTitle: "Clear Unpinned History…",
+            action: #selector(confirmClearUnpinnedFromMenu),
+            keyEquivalent: ""
+        )
+        clearHistoryItem.isEnabled = controller.storageState == .ready
+        menu.addItem(withTitle: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Clipboard Manager", action: #selector(quitFromMenu), keyEquivalent: "q")
+        for item in menu.items { item.target = self }
+        item.menu = menu
+        statusItem = item
+    }
+
+    @objc private func openClipboardFromMenu() { openPanel() }
+    @objc private func toggleRecordingFromMenu() { toggleRecording() }
+    @objc private func openSettingsFromMenu() {
+        if let window = settingsWindowController?.window {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            let viewController = NSHostingController(rootView: ClipboardSettingsView(delegate: self))
+            let window = NSWindow(contentViewController: viewController)
+            window.title = "Clipboard Manager Settings"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.setContentSize(NSSize(width: 560, height: 440))
+            window.center()
+            window.isReleasedWhenClosed = false
+            let controller = NSWindowController(window: window)
+            settingsWindowController = controller
+            controller.showWindow(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    @objc private func quitFromMenu() { NSApp.terminate(nil) }
+    @objc private func confirmClearUnpinnedFromMenu() { confirmClearHistory(keepingPinned: true) }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(confirmClearUnpinnedFromMenu) {
+            return controller.storageState == .ready
+        }
+        return true
+    }
+
+    func confirmClearHistory(keepingPinned: Bool) {
+        let alert = NSAlert()
+        alert.messageText = keepingPinned ? "Clear unpinned clipboard history?" : "Clear all clipboard history?"
+        alert.informativeText = keepingPinned ? "Pinned items will be kept." : "Pinned items will also be removed."
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        clearHistory(keepingPinned: keepingPinned)
+    }
 }

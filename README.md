@@ -3,17 +3,16 @@
 Clipboard Manager is a private, local-first macOS clipboard history manager. It
 uses Swift 6, SwiftUI, and native macOS frameworks only.
 
-## Gate D — automatic paste
+## Full V1 functionality
 
-Gates A–D are complete and independently reviewed, with 84 passing tests and a clean signed build.
-Native automatic paste inserted the exact selected synthetic text into the test editor. Copy-only,
-search, keyboard navigation and the physical global shortcut are verified; see the precise
-[validation evidence and remaining checks](docs/STATUS.md).
+Gates A–E are accepted and independently reviewed, with 145
+passing tests and a clean signed Debug build. Final appearance and trusted-tester packaging remain
+Gate F. See the precise [validation evidence and remaining checks](docs/STATUS.md).
 
-The app now stores accepted text and URL captures in local SQLite history at
+The app stores accepted text, URLs, practical rich text, images, and ordered file/folder references in local SQLite history at
 `~/Library/Application Support/com.example.ClipboardManager/history.sqlite`.
 It opens storage asynchronously, keeps normal history rows metadata-only, and
-queries SQLite for the visible list. Search includes retained history rather
+queries SQLite for the visible list. Large payloads use private local blob files and are loaded only when selected. Search includes retained history rather
 than an in-memory subset; the UI provides All, Text, Code, Links, Images,
 Files, and Pinned filters.
 
@@ -30,7 +29,7 @@ already owns `⌘⇧V`, the panel remains available from the Dock and explains t
 shortcut conflict.
 
 `↑` and `↓` select visible results, `⌘K` clears and refocuses search, `Space`
-or `→` opens the text preview after list navigation, and `Esc` closes the panel
+or `→` opens the preview after list navigation or pointer selection, and `Esc` closes the panel
 and restores the previously active application when it is still appropriate.
 `Return`, double-click, and `⌘1` through `⌘9` restore the chosen item, close the
 panel, and request a normal paste into the remembered application when it is
@@ -44,9 +43,13 @@ Choosing Paste or Enable Accessibility may show the macOS permission prompt.
 The app remains useful without this permission. Posting a paste request does
 not guarantee that the destination accepts it.
 
-There is still no menu bar or pin/delete/clear UI. Images and files have filter placeholders but are not
-yet captured by the Gate A monitor. If macOS denies clipboard access, the app
-shows guidance to enable Clipboard access in System Settings.
+The menu-bar item provides Open Clipboard, Pause/Resume, Clear History, Settings and Quit.
+Settings include a configurable shortcut, native launch at login, menu-bar visibility, retention,
+recording pause, and excluded bundle identifiers. Hiding the menu icon enables a Dock fallback.
+`⌘P` pins or unpins the selection. `⌘Delete` and preview Delete request confirmation; clearing
+can retain pins or remove all history. Default retention keeps at most 1,000 unpinned items for
+30 days. Concealed/transient content and excluded sources are checked before normal payload reads.
+If macOS denies clipboard access, the app shows guidance to enable it in System Settings.
 
 `ClipboardCore` lives in `Sources/ClipboardCore`; its tests live in
 `Tests/ClipboardCoreTests`. The Xcode app target links and imports that local
@@ -83,7 +86,7 @@ production database, add these Debug launch arguments in the shared scheme:
 
 ```text
 --test-pasteboard com.example.ClipboardManager.smoke
---test-storage-directory /tmp/ClipboardManager-GateD-smoke
+--test-storage-directory /tmp/ClipboardManager-GateE-smoke
 ```
 
 Build the Debug app first:
@@ -112,10 +115,10 @@ write synthetic text to that named board, then resume so the monitor can poll:
 
 ```swift
 expr -l Swift -- import AppKit
-expr -l Swift -- let board = NSPasteboard(name: NSPasteboard.Name("com.example.ClipboardManager.smoke")); board.clearContents(); board.setString("Gate D smoke item", forType: .string)
+expr -l Swift -- let board = NSPasteboard(name: NSPasteboard.Name("com.example.ClipboardManager.smoke")); board.clearContents(); board.setString("Gate E smoke item", forType: .string)
 ```
 
-Within about 0.4 seconds, `Gate D smoke item` should appear in the floating
+Within about 0.4 seconds, `Gate E smoke item` should appear in the floating
 panel. Use `⌘⇧V` to hide and show the panel, and select the row with `↓` then
 press `⌘Return` to verify explicit copy-only restoration on the isolated board.
 Return also copies and closes in this run, with fallback guidance on reopening.
@@ -127,5 +130,5 @@ After this synthetic smoke test, remove only the exact synthetic directory you
 created:
 
 ```bash
-rm -rf /tmp/ClipboardManager-GateD-smoke
+rm -rf /tmp/ClipboardManager-GateE-smoke
 ```

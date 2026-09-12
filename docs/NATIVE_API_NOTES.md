@@ -113,3 +113,48 @@ Sources: installed macOS SDK `CoreGraphics/CGEvent.h` and `HIServices/AXUIElemen
 [frontmost application](https://developer.apple.com/documentation/appkit/nsworkspace/frontmostapplication),
 [process identity](https://developer.apple.com/documentation/appkit/nsrunningapplication/processidentifier),
 [PID-targeted event posting](https://developer.apple.com/documentation/coregraphics/cgevent/posttopid(_:)).
+
+## Settings, login and display lifecycle — Gate E
+
+Use `SMAppService.mainApp` for launch at login. Registration may report an already registered service or
+user denial, so the UI must refresh the native status instead of treating a saved preference as proof that
+the service is enabled. Loading preferences must not register the service automatically. A pending approval
+state needs to remain visible even when the registration call throws.
+
+SwiftUI `MenuBarExtra` supports an insertion binding, including removal by the user. Apple also documents
+automatic termination for a utility that has only a menu-bar scene when its extra is removed. Hiding the icon
+therefore requires a verified, reachable application lifecycle and Dock fallback; changing a preference alone
+does not establish that behavior.
+
+Observe `NSApplication.didChangeScreenParametersNotification` to recover an already visible panel after
+display configuration changes. The notification arrives on the main actor. Repositioning must not activate a
+hidden panel or replace the application captured for focus restoration. Workspace sleep/wake notifications
+separately suspend capture and establish a fresh change-count baseline on wake.
+
+Sources: [main application login service](https://developer.apple.com/documentation/servicemanagement/smappservice/mainapp),
+[service registration](https://developer.apple.com/documentation/servicemanagement/smappservice/register()),
+[approval status](https://developer.apple.com/documentation/servicemanagement/smappservice/status-swift.enum/requiresapproval),
+[menu-bar scenes](https://developer.apple.com/documentation/swiftui/menubarextra),
+[display configuration notification](https://developer.apple.com/documentation/appkit/nsapplication/didchangescreenparametersnotification).
+
+## Bounded image previews — Gate E
+
+Decode only the selected image preview, outside the main actor. ImageIO thumbnail creation needs an explicit
+`kCGImageSourceThumbnailMaxPixelSize`; without it Apple warns that a thumbnail can be as large as its source.
+The current preview target is at most 768 pixels per dimension. Cancellation and selected-item identity must
+prevent a previous decode from appearing for a newly selected row. Decoding failure is an item-local preview
+error, not a reason to stop recording or hide the history row.
+
+Sources: [ImageIO thumbnail creation](https://developer.apple.com/documentation/imageio/cgimagesourcecreatethumbnailatindex(_:_:_:)),
+[thumbnail pixel limit](https://developer.apple.com/documentation/imageio/kcgimagesourcethumbnailmaxpixelsize).
+
+### Menu validation
+
+Apple documents that `NSMenu` auto-enables items by default and that setting an item's
+`isEnabled` alone has no effect in that mode. The menu target now implements
+`NSMenuItemValidation` to compute Clear availability from current storage state whenever
+AppKit validates the menu. This avoids a stale availability snapshot.
+
+- [NSMenu.autoenablesItems](https://developer.apple.com/documentation/appkit/nsmenu/autoenablesitems)
+- [NSMenuItem.isEnabled](https://developer.apple.com/documentation/appkit/nsmenuitem/isenabled)
+- [NSMenuItemValidation.validateMenuItem](https://developer.apple.com/documentation/appkit/nsmenuitemvalidation/validatemenuitem(_:))

@@ -10,6 +10,8 @@
 		A10000000000000000000001 /* ClipboardCore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* ClipboardCore */; };
 		A10000000000000000000014 /* ClipboardPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* ClipboardPanelView.swift */; };
 		A10000000000000000000016 /* ClipboardPanelHostingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* ClipboardPanelHostingView.swift */; };
+		A10000000000000000000018 /* ClipboardSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* ClipboardSettingsView.swift */; };
+		A10000000000000000000020 /* ShortcutRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* ShortcutRecorder.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -17,6 +19,8 @@
 		A10000000000000000000004 /* ClipboardManagerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardManagerApp.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* ClipboardPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardPanelView.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* ClipboardPanelHostingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardPanelHostingView.swift; sourceTree = "<group>"; };
+		A10000000000000000000019 /* ClipboardSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardSettingsView.swift; sourceTree = "<group>"; };
+		A10000000000000000000021 /* ShortcutRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutRecorder.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -45,6 +49,8 @@
 				A10000000000000000000004 /* ClipboardManagerApp.swift */,
 				A10000000000000000000015 /* ClipboardPanelView.swift */,
 				A10000000000000000000017 /* ClipboardPanelHostingView.swift */,
+				A10000000000000000000019 /* ClipboardSettingsView.swift */,
+				A10000000000000000000021 /* ShortcutRecorder.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -127,6 +133,8 @@
 				A1000000000000000000000F /* ClipboardManagerApp.swift in Sources */,
 				A10000000000000000000014 /* ClipboardPanelView.swift in Sources */,
 				A10000000000000000000016 /* ClipboardPanelHostingView.swift in Sources */,
+				A10000000000000000000018 /* ClipboardSettingsView.swift in Sources */,
+				A10000000000000000000020 /* ShortcutRecorder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

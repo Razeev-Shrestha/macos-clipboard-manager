@@ -7,6 +7,7 @@ import XCTest
 private final class FakePasteboard: ClipboardPasteboard {
     var changeCount: Int
     var accessState: PasteboardAccessState = .unknown
+    private(set) var excludedBundleIdentifiers: Set<String> = []
     var readCount = 0
     var writeCount = 0
     var resultByChangeCount: [Int: PasteboardReadResult] = [:]
@@ -21,6 +22,12 @@ private final class FakePasteboard: ClipboardPasteboard {
     func readSnapshotIfStable(expectedChangeCount: Int) -> PasteboardReadResult {
         readCount += 1
         if let result = resultByChangeCount[expectedChangeCount] {
+            if case .snapshot(let snapshot) = result,
+               let bundleIdentifier = snapshot.capture.source?.bundleIdentifier,
+               excludedBundleIdentifiers.contains(bundleIdentifier)
+            {
+                return .skipped(.privacyMarker)
+            }
             return result
         }
         return defaultReadResult
@@ -37,6 +44,10 @@ private final class FakePasteboard: ClipboardPasteboard {
             return result
         }
         return .failed
+    }
+
+    func setExcludedBundleIdentifiers(_ identifiers: Set<String>) {
+        excludedBundleIdentifiers = identifiers
     }
 }
 
@@ -122,7 +133,7 @@ final class ClipboardCoreTests: XCTestCase {
         monitor.stop()
     }
 
-    func testMonitorReadsOnlyAfterAChangedCountAndRecordsText() {
+    func testMonitorReadsOnlyAfterAChangedCountAndPublishesCandidateWithoutRetainingPayload() {
         let fake = FakePasteboard(changeCount: 1)
         let monitor = NSPasteboardMonitor(
             pasteboard: fake,
@@ -134,13 +145,144 @@ final class ClipboardCoreTests: XCTestCase {
         fake.changeCount = 2
         fake.resultByChangeCount[2] = .snapshot(PasteboardSnapshot(changeCount: 2, capture: capture))
 
-        XCTAssertEqual(monitor.pollNow(), .recorded(.inserted(monitor.history.items[0])))
+        let result = monitor.pollNow()
+        guard case .captured(let candidate) = result else {
+            XCTFail("expected an accepted capture candidate")
+            return
+        }
+        XCTAssertEqual(candidate.snapshot.capture, capture)
+        XCTAssertEqual(candidate.generation, 0)
+        XCTAssertEqual(candidate.capturedAt, Date(timeIntervalSinceReferenceDate: 200))
         XCTAssertEqual(fake.readCount, 1)
+        XCTAssertEqual(monitor.history.items.count, 0)
+
+        monitor.recordPersisted(ClipboardItem(capture: capture, createdAt: candidate.capturedAt))
         XCTAssertEqual(monitor.history.items.count, 1)
         XCTAssertEqual(monitor.history.items[0].searchableText, "changed")
+        XCTAssertNil(monitor.history.items[0].payload)
         XCTAssertEqual(monitor.pollNow(), .unchanged(changeCount: 2))
         XCTAssertEqual(fake.readCount, 1)
         monitor.stop()
+    }
+
+    func testPausedRecordingAdvancesBaselineWithoutReadingOrCatchingUp() {
+        let fake = FakePasteboard(changeCount: 1)
+        let monitor = NSPasteboardMonitor(pasteboard: fake)
+        monitor.start()
+        monitor.setRecordingPaused(true)
+
+        fake.changeCount = 2
+        fake.resultByChangeCount[2] = .snapshot(
+            PasteboardSnapshot(changeCount: 2, capture: makeCapture(text: "paused"))
+        )
+        XCTAssertEqual(monitor.pollNow(), .paused(changeCount: 2))
+        XCTAssertEqual(fake.readCount, 0)
+
+        monitor.setRecordingPaused(false)
+        XCTAssertEqual(monitor.pollNow(), .unchanged(changeCount: 2))
+        XCTAssertEqual(fake.readCount, 0)
+
+        fake.changeCount = 3
+        fake.resultByChangeCount[3] = .snapshot(
+            PasteboardSnapshot(changeCount: 3, capture: makeCapture(text: "resumed"))
+        )
+        guard case .captured = monitor.pollNow() else {
+            XCTFail("expected a post-resume capture")
+            return
+        }
+        XCTAssertEqual(fake.readCount, 1)
+        monitor.stop()
+    }
+
+    func testExclusionIsForwardedBeforeCaptureAndRejectsSource() {
+        let fake = FakePasteboard(changeCount: 1)
+        let monitor = NSPasteboardMonitor(pasteboard: fake)
+        monitor.start()
+        monitor.setExcludedBundleIdentifiers(["com.example.private"])
+
+        XCTAssertEqual(fake.excludedBundleIdentifiers, ["com.example.private"])
+        fake.changeCount = 2
+        fake.resultByChangeCount[2] = .snapshot(
+            PasteboardSnapshot(
+                changeCount: 2,
+                capture: makeCapture(
+                    text: "private",
+                    source: ClipboardSource(bundleIdentifier: "com.example.private")
+                )
+            )
+        )
+
+        XCTAssertEqual(monitor.pollNow(), .skipped(.privacyMarker))
+        monitor.stop()
+    }
+
+    func testWakeRebaselinesWithoutCatchingUpClipboardChanges() {
+        let fake = FakePasteboard(changeCount: 1)
+        let monitor = NSPasteboardMonitor(pasteboard: fake)
+        monitor.start()
+
+        fake.changeCount = 2
+        fake.resultByChangeCount[2] = .snapshot(
+            PasteboardSnapshot(changeCount: 2, capture: makeCapture(text: "while asleep"))
+        )
+        monitor.handleWake()
+        XCTAssertEqual(monitor.pollNow(), .unchanged(changeCount: 2))
+        XCTAssertEqual(fake.readCount, 0)
+        monitor.stop()
+    }
+
+    func testSleepSkipsPollingUntilWakeAndWakeDoesNotCatchUp() {
+        let fake = FakePasteboard(changeCount: 1)
+        let monitor = NSPasteboardMonitor(pasteboard: fake)
+        monitor.start()
+
+        monitor.handleSleep()
+        fake.changeCount = 2
+        fake.resultByChangeCount[2] = .snapshot(
+            PasteboardSnapshot(changeCount: 2, capture: makeCapture(text: "while sleeping"))
+        )
+        XCTAssertEqual(monitor.pollNow(), .sleeping(changeCount: 2))
+        XCTAssertEqual(fake.readCount, 0)
+
+        fake.changeCount = 3
+        fake.resultByChangeCount[3] = .snapshot(
+            PasteboardSnapshot(changeCount: 3, capture: makeCapture(text: "also while sleeping"))
+        )
+        XCTAssertEqual(monitor.pollNow(), .sleeping(changeCount: 3))
+        XCTAssertEqual(fake.readCount, 0)
+
+        monitor.handleWake()
+        XCTAssertEqual(monitor.pollNow(), .unchanged(changeCount: 3))
+        XCTAssertEqual(fake.readCount, 0)
+        monitor.stop()
+    }
+
+    func testMetadataCacheBoundsSearchablePreview() {
+        var history = InMemoryClipboardHistory()
+        let longText = String(repeating: "x", count: 10_000)
+        let update = history.record(makeCapture(text: longText), at: Date())
+
+        XCTAssertEqual(update.item.searchableText?.count, 4_096)
+        XCTAssertNil(update.item.payload)
+    }
+
+    func testMetadataCacheMutationHelpersRemoveClearedRows() {
+        let fake = FakePasteboard()
+        let monitor = NSPasteboardMonitor(pasteboard: fake)
+        let pinned = ClipboardItem(capture: makeCapture(text: "pinned"), createdAt: Date(timeIntervalSinceReferenceDate: 1))
+            .withPinning(true)
+        let unpinned = ClipboardItem(capture: makeCapture(text: "unpinned"), createdAt: Date(timeIntervalSinceReferenceDate: 2))
+        monitor.recordPersisted(pinned)
+        monitor.recordPersisted(unpinned)
+
+        monitor.setPinned(false, for: pinned.id)
+        XCTAssertFalse(monitor.history.items.first(where: { $0.id == pinned.id })?.isPinned == true)
+        monitor.setPinned(true, for: pinned.id)
+        monitor.clearCachedItems(keepingPinned: true)
+
+        XCTAssertEqual(monitor.history.items.map(\.id), [pinned.id])
+        monitor.removeCachedItem(id: pinned.id)
+        XCTAssertTrue(monitor.history.items.isEmpty)
     }
 
     func testInternalRestoreIsSuppressedButLaterExternalIdenticalCopyUpdatesHistory() {
@@ -154,21 +296,33 @@ final class ClipboardCoreTests: XCTestCase {
         let firstCapture = makeCapture(text: "same", source: ClipboardSource(appName: "A", bundleIdentifier: "a"))
         fake.changeCount = 2
         fake.resultByChangeCount[2] = .snapshot(PasteboardSnapshot(changeCount: 2, capture: firstCapture))
-        _ = monitor.pollNow()
+        guard case .captured(let firstCandidate) = monitor.pollNow() else {
+            XCTFail("expected initial capture candidate")
+            return
+        }
+        monitor.recordPersisted(ClipboardItem(capture: firstCapture, createdAt: firstCandidate.capturedAt))
         guard let original = monitor.history.items.first else {
-            XCTFail("expected initial item")
+            XCTFail("expected initial metadata item")
             return
         }
 
         fake.nextWriteResult = .written(changeCount: 3)
-        XCTAssertTrue(monitor.restore(original))
+        // The monitor cache intentionally strips payloads; restore uses the
+        // durable/hydrated payload that a controller would supply.
+        XCTAssertTrue(monitor.restore(firstCapture.payload))
         XCTAssertEqual(monitor.pollNow(), .selfWriteSuppressed(changeCount: 3))
         XCTAssertEqual(fake.readCount, 1)
 
         let externalCapture = makeCapture(text: "same", source: ClipboardSource(appName: "B", bundleIdentifier: "b"))
         fake.changeCount = 4
         fake.resultByChangeCount[4] = .snapshot(PasteboardSnapshot(changeCount: 4, capture: externalCapture))
-        _ = monitor.pollNow()
+        guard case .captured(let externalCandidate) = monitor.pollNow() else {
+            XCTFail("expected external capture candidate")
+            return
+        }
+        monitor.recordPersisted(
+            ClipboardItem(capture: externalCapture, createdAt: externalCandidate.capturedAt)
+        )
 
         XCTAssertEqual(monitor.history.items.count, 1)
         guard let updated = monitor.history.items.first else {
@@ -198,7 +352,11 @@ final class ClipboardCoreTests: XCTestCase {
         )))
 
         fake.resultByChangeCount[3] = .snapshot(PasteboardSnapshot(changeCount: 3, capture: capture))
-        _ = monitor.pollNow()
+        guard case .captured(let candidate) = monitor.pollNow() else {
+            XCTFail("expected raced capture candidate")
+            return
+        }
+        monitor.recordPersisted(ClipboardItem(capture: capture, createdAt: candidate.capturedAt))
         XCTAssertEqual(monitor.history.count, 1)
         XCTAssertEqual(fake.readCount, 1)
         monitor.stop()

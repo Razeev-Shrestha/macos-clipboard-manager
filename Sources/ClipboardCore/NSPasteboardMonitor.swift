@@ -4,8 +4,25 @@ public enum ClipboardMonitorPollResult: Equatable, Sendable {
     case startupBaseline(changeCount: Int)
     case unchanged(changeCount: Int)
     case selfWriteSuppressed(changeCount: Int)
-    case recorded(ClipboardHistoryUpdate)
+    case captured(ClipboardCaptureCandidate)
+    case paused(changeCount: Int)
+    case sleeping(changeCount: Int)
     case skipped(PasteboardSkipReason)
+}
+
+/// A stable pasteboard snapshot accepted in poll order. The generation changes
+/// when recording policy or lifecycle state changes, allowing the async history
+/// worker to discard stale, not-yet-persisted clipboard data.
+public struct ClipboardCaptureCandidate: Equatable, Sendable {
+    public let snapshot: PasteboardSnapshot
+    public let generation: UInt64
+    public let capturedAt: Date
+
+    public init(snapshot: PasteboardSnapshot, generation: UInt64, capturedAt: Date = Date()) {
+        self.snapshot = snapshot
+        self.generation = generation
+        self.capturedAt = capturedAt
+    }
 }
 
 /// The exact pasteboard change count verified by an internal restore.  The
@@ -28,11 +45,16 @@ public final class NSPasteboardMonitor: NSObject {
     private let pasteboard: any ClipboardPasteboard
     private let now: () -> Date
     private let pollInterval: TimeInterval
+    private var retention: ClipboardHistoryRetention
     private var timer: Timer?
     private var observedChangeCount: Int?
     private var unstableChangeCount: Int?
     private var retryRequested = false
     private var suppressedChangeCounts: Set<Int> = []
+    private var excludedBundleIdentifiers: Set<String> = []
+    private var recordingPaused = false
+    private var isSleeping = false
+    private var captureGeneration: UInt64 = 0
 
     public private(set) var history: InMemoryClipboardHistory
     public var onPollResult: (@MainActor (
@@ -45,12 +67,14 @@ public final class NSPasteboardMonitor: NSObject {
         pasteboard: any ClipboardPasteboard,
         history: InMemoryClipboardHistory = InMemoryClipboardHistory(),
         pollInterval: TimeInterval = NSPasteboardMonitor.defaultPollInterval,
-        now: @escaping () -> Date = { Date() }
+        now: @escaping () -> Date = { Date() },
+        retention: ClipboardHistoryRetention = .default
     ) {
         self.pasteboard = pasteboard
         self.history = history
         self.pollInterval = max(0.05, pollInterval)
         self.now = now
+        self.retention = retention
         super.init()
     }
 
@@ -62,6 +86,14 @@ public final class NSPasteboardMonitor: NSObject {
         timer != nil
     }
 
+    public var isRecordingPaused: Bool {
+        recordingPaused
+    }
+
+    public var currentCaptureGeneration: UInt64 {
+        captureGeneration
+    }
+
     public var accessState: PasteboardAccessState {
         pasteboard.accessState
     }
@@ -71,6 +103,7 @@ public final class NSPasteboardMonitor: NSObject {
             return
         }
 
+        pasteboard.setExcludedBundleIdentifiers(excludedBundleIdentifiers)
         observedChangeCount = pasteboard.changeCount
         unstableChangeCount = nil
         suppressedChangeCounts.removeAll(keepingCapacity: true)
@@ -89,11 +122,111 @@ public final class NSPasteboardMonitor: NSObject {
         timer = nil
     }
 
+    /// Applies recording pause without stopping the lightweight change-count timer.
+    /// The current count becomes the new baseline, so paused writes are never caught
+    /// up when recording resumes.
+    public func setRecordingPaused(_ paused: Bool) {
+        guard recordingPaused != paused else {
+            return
+        }
+        recordingPaused = paused
+        invalidatePendingCaptureGeneration()
+        rebaseline()
+    }
+
+    /// Updates the boundary before the next capture. Pending candidates from the old
+    /// policy are discarded so an exclusion change cannot persist stale private data.
+    public func setExcludedBundleIdentifiers(_ identifiers: Set<String>) {
+        guard excludedBundleIdentifiers != identifiers else {
+            return
+        }
+        excludedBundleIdentifiers = identifiers
+        pasteboard.setExcludedBundleIdentifiers(identifiers)
+        invalidatePendingCaptureGeneration()
+        rebaseline()
+    }
+
+    /// Called after a sleep/wake transition. Re-baselining avoids catching up writes
+    /// made while the utility was asleep, including writes made while paused.
+    public func handleSleep() {
+        isSleeping = true
+        invalidatePendingCaptureGeneration()
+        rebaseline()
+    }
+
+    public func handleWake() {
+        isSleeping = false
+        invalidatePendingCaptureGeneration()
+        rebaseline()
+    }
+
+    /// Keeps the transient metadata cache aligned with durable pin actions. The
+    /// cache is only a fast, bounded monitor view; the repository remains canonical.
+    func setPinned(_ pinned: Bool, for id: UUID, now: Date? = nil) {
+        _ = history.setPinned(pinned, for: id)
+        if let now {
+            history.applyRetention(retention, now: now)
+        }
+    }
+
+    /// Mirrors a durable recency update before applying retention, preserving the
+    /// cache row's canonical identity and pin state.
+    func markUsed(at date: Date, for id: UUID) {
+        _ = history.markUsed(at: date, for: id)
+    }
+
+    /// Updates the cache policy after the durable repository has committed the
+    /// same policy, pruning only metadata that the repository would remove.
+    func setRetention(_ retention: ClipboardHistoryRetention, now: Date = Date()) {
+        self.retention = retention
+        history.applyRetention(retention, now: now)
+    }
+
+    /// Reapplies the current policy after a durable mutation such as a recency
+    /// update that may have evicted other unpinned rows.
+    func pruneRetention(now: Date = Date()) {
+        history.applyRetention(retention, now: now)
+    }
+
+    /// Removes an item from the transient cache after its durable row is deleted.
+    func removeCachedItem(id: UUID) {
+        _ = history.remove(id: id)
+    }
+
+    /// Removes rows from the transient cache after a durable clear operation.
+    func clearCachedItems(keepingPinned: Bool = false) {
+        history.clear(keepingPinned: keepingPinned)
+    }
+
+    /// Inserts only metadata into the monitor cache after durable persistence has
+    /// succeeded. The cache never retains the captured payload/blob bytes.
+    public func recordPersisted(_ item: ClipboardItem, now: Date? = nil) {
+        _ = history.record(item)
+        if let now {
+            history.applyRetention(retention, now: now)
+        }
+    }
+
     /// The app lifecycle uses the timer, while tests and callers that need an immediate
     /// refresh can drive the same state machine synchronously.
     @discardableResult
     public func pollNow() -> ClipboardMonitorPollResult {
         let currentChangeCount = pasteboard.changeCount
+
+        if isSleeping {
+            observedChangeCount = currentChangeCount
+            unstableChangeCount = nil
+            retryRequested = false
+            return publish(.sleeping(changeCount: currentChangeCount))
+        }
+
+        if recordingPaused {
+            observedChangeCount = currentChangeCount
+            unstableChangeCount = nil
+            retryRequested = false
+            return publish(.paused(changeCount: currentChangeCount))
+        }
+
         let forcedRetry = retryRequested && retryRequestedForCurrentCount(currentChangeCount)
         retryRequested = false
 
@@ -126,13 +259,12 @@ public final class NSPasteboardMonitor: NSObject {
             }
 
             unstableChangeCount = nil
-            let captureDate = now()
-            let item = ClipboardItem(
-                capture: snapshot.capture,
-                createdAt: captureDate,
-                lastUsedAt: captureDate
+            let candidate = ClipboardCaptureCandidate(
+                snapshot: snapshot,
+                generation: captureGeneration,
+                capturedAt: now()
             )
-            return publish(.recorded(history.record(item)))
+            return publish(.captured(candidate))
 
         case .skipped(.changedDuringRead):
             if unstableChangeCount == currentChangeCount {
@@ -221,5 +353,16 @@ public final class NSPasteboardMonitor: NSObject {
             }
             suppressedChangeCounts.remove(oldestStoredCount)
         }
+    }
+
+    private func invalidatePendingCaptureGeneration() {
+        captureGeneration &+= 1
+    }
+
+    private func rebaseline() {
+        observedChangeCount = pasteboard.changeCount
+        unstableChangeCount = nil
+        retryRequested = false
+        suppressedChangeCounts.removeAll(keepingCapacity: true)
     }
 }

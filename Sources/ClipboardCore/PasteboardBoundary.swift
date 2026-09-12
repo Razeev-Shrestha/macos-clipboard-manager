@@ -65,6 +65,7 @@ public protocol ClipboardPasteboard: AnyObject {
 
     func readSnapshotIfStable(expectedChangeCount: Int) -> PasteboardReadResult
     func write(payload: ClipboardPayload) -> PasteboardWriteResult
+    func setExcludedBundleIdentifiers(_ identifiers: Set<String>)
 }
 
 /// Main-actor adapter around a concrete NSPasteboard.  The app should pass
@@ -74,6 +75,7 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
     private let pasteboard: NSPasteboard
     private let sourceProvider: () -> ClipboardSource?
     private let accessBehaviorProvider: () -> NSPasteboard.AccessBehavior
+    private var excludedBundleIdentifiers: Set<String> = []
 
     public init(
         pasteboard: NSPasteboard,
@@ -102,6 +104,10 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
         pasteboard.changeCount
     }
 
+    public func setExcludedBundleIdentifiers(_ identifiers: Set<String>) {
+        excludedBundleIdentifiers = identifiers
+    }
+
     /// `accessBehavior` is metadata, so this reports access policy changes without
     /// triggering a pasteboard payload read or waiting for a new change count.
     public var accessState: PasteboardAccessState {
@@ -126,36 +132,40 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
             return .skipped(.accessDenied)
         }
 
-        guard let item = pasteboard.pasteboardItems?.first else {
+        guard let items = pasteboard.pasteboardItems, !items.isEmpty else {
             if pasteboard.accessBehavior == .alwaysDeny {
                 return .skipped(.accessDenied)
             }
             return .skipped(.empty)
         }
 
-        let initialTypes = item.types
-        guard !initialTypes.isEmpty else {
+        let initialTypesByItem = items.map(\.types)
+        guard initialTypesByItem.allSatisfy({ !$0.isEmpty }) else {
             return .skipped(.unsupported)
         }
 
-        let initialTypeIdentifiers = initialTypes.map(\.rawValue)
-        if initialTypeIdentifiers.contains(where: ClipboardPrivacyMarkers.ignoredTypeIdentifiers.contains) {
+        let initialTypeIdentifiersByItem = initialTypesByItem.map { $0.map(\.rawValue) }
+        if initialTypeIdentifiersByItem.joined().contains(where: ClipboardPrivacyMarkers.ignoredTypeIdentifiers.contains) {
             return .skipped(.privacyMarker)
         }
 
-        let source = source(for: item)
-        let captureResult = capture(item: item, types: initialTypes, source: source)
+        let sourceMetadata = sourceMetadata(for: items)
+        if !excludedBundleIdentifiers.isDisjoint(with: sourceMetadata.bundleIdentifiers) {
+            return .skipped(.privacyMarker)
+        }
+
+        let captureResult = capture(items: items, typesByItem: initialTypesByItem, source: sourceMetadata.displaySource)
 
         guard expectedChangeCount == pasteboard.changeCount else {
             return .skipped(.changedDuringRead)
         }
 
-        let finalTypeIdentifiers = item.types.map(\.rawValue)
-        if finalTypeIdentifiers.contains(where: ClipboardPrivacyMarkers.ignoredTypeIdentifiers.contains) {
+        let finalTypeIdentifiersByItem = items.map { $0.types.map(\.rawValue) }
+        if finalTypeIdentifiersByItem.joined().contains(where: ClipboardPrivacyMarkers.ignoredTypeIdentifiers.contains) {
             return .skipped(.privacyMarker)
         }
 
-        guard initialTypeIdentifiers == finalTypeIdentifiers else {
+        guard initialTypeIdentifiersByItem == finalTypeIdentifiersByItem else {
             return .skipped(.changedDuringRead)
         }
 
@@ -168,6 +178,10 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
     }
 
     public func write(payload: ClipboardPayload) -> PasteboardWriteResult {
+        if let items = payload.items {
+            return write(items: items)
+        }
+
         // Reject a malformed empty restore before changing the user's clipboard.
         guard !payload.representations.isEmpty || payload.plainText != nil || payload.url != nil else {
             return .failed
@@ -205,91 +219,295 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
         return .written(changeCount: writeChangeCount)
     }
 
-    private func source(for item: NSPasteboardItem) -> ClipboardSource? {
-        let sourceType = NSPasteboard.PasteboardType("org.nspasteboard.source")
-        guard let markerBundleID = item.string(forType: sourceType), !markerBundleID.isEmpty else {
-            return sourceProvider()
+    private func write(items: [ClipboardPayloadItem]) -> PasteboardWriteResult {
+        guard !items.isEmpty else {
+            return .failed
         }
 
+        let pasteboardItems = items.compactMap(makePasteboardItem)
+        guard pasteboardItems.count == items.count else {
+            return .failed
+        }
+
+        let writeChangeCount = pasteboard.prepareForNewContents(with: [.currentHostOnly])
+        guard pasteboard.writeObjects(pasteboardItems) else {
+            return .failed
+        }
+
+        guard pasteboard.changeCount == writeChangeCount else {
+            return .changedDuringWrite
+        }
+        return .written(changeCount: writeChangeCount)
+    }
+
+    private func makePasteboardItem(_ payload: ClipboardPayloadItem) -> NSPasteboardItem? {
+        guard !payload.representations.isEmpty || payload.plainText != nil || payload.url != nil else {
+            return nil
+        }
+
+        let item = NSPasteboardItem()
+        for representation in payload.representations {
+            guard item.setData(representation.data, forType: NSPasteboard.PasteboardType(representation.typeIdentifier)) else {
+                return nil
+            }
+        }
+
+        if payload.representations.isEmpty {
+            if let url = payload.url {
+                guard item.setString(url.absoluteString, forType: .URL) else {
+                    return nil
+                }
+                if let plainText = payload.plainText,
+                   !item.setString(plainText, forType: .string)
+                {
+                    return nil
+                }
+            } else if let plainText = payload.plainText {
+                guard item.setString(plainText, forType: .string) else {
+                    return nil
+                }
+            }
+        }
+
+        return item
+    }
+
+    private func sourceMetadata(for items: [NSPasteboardItem]) -> SourceMetadata {
+        let sourceType = NSPasteboard.PasteboardType("org.nspasteboard.source")
+        let markerBundleIdentifiers = items.compactMap { item in
+            item.string(forType: sourceType).flatMap { $0.isEmpty ? nil : $0 }
+        }
         let provided = sourceProvider()
-        return ClipboardSource(appName: provided?.appName, bundleIdentifier: markerBundleID)
+        var bundleIdentifiers = Set(markerBundleIdentifiers)
+        if let bundleIdentifier = provided?.bundleIdentifier {
+            bundleIdentifiers.insert(bundleIdentifier)
+        }
+
+        guard let markerBundleID = markerBundleIdentifiers.first else {
+            return SourceMetadata(displaySource: provided, bundleIdentifiers: bundleIdentifiers)
+        }
+        let displaySource: ClipboardSource
+        if provided?.bundleIdentifier == markerBundleID {
+            displaySource = ClipboardSource(appName: provided?.appName, bundleIdentifier: markerBundleID)
+        } else {
+            displaySource = ClipboardSource(bundleIdentifier: markerBundleID)
+        }
+        return SourceMetadata(displaySource: displaySource, bundleIdentifiers: bundleIdentifiers)
     }
 
     private func capture(
-        item: NSPasteboardItem,
-        types: [NSPasteboard.PasteboardType],
+        items: [NSPasteboardItem],
+        typesByItem: [[NSPasteboard.PasteboardType]],
         source: ClipboardSource?
     ) -> PasteboardReadResult {
-        let availableTypeIdentifiers = types.map(\.rawValue)
-        let urlType = types.first(where: { $0.rawValue == NSPasteboard.PasteboardType.URL.rawValue })
-        let textType = types.first(where: { $0.rawValue == NSPasteboard.PasteboardType.string.rawValue })
-
-        if let urlType {
-            let urlText = item.string(forType: urlType)
-                ?? (item.propertyList(forType: urlType) as? String)
-                ?? (item.propertyList(forType: urlType) as? URL)?.absoluteString
-            if let urlText, let url = validURL(from: urlText) {
-                var representations = [ClipboardRepresentation]()
-                if let data = item.data(forType: urlType) {
-                    representations.append(ClipboardRepresentation(typeIdentifier: urlType.rawValue, data: data))
-                } else {
-                    representations.append(ClipboardRepresentation(typeIdentifier: urlType.rawValue, data: Data(urlText.utf8)))
-                }
-
-                var plainText: String?
-                if let textType, let text = item.string(forType: textType) {
-                    plainText = text
-                    let data = item.data(forType: textType) ?? Data(text.utf8)
-                    representations.append(ClipboardRepresentation(typeIdentifier: textType.rawValue, data: data))
-                }
-
-                let payload = ClipboardPayload(
-                    primaryTypeIdentifier: urlType.rawValue,
-                    representations: representations,
-                    availableTypeIdentifiers: availableTypeIdentifiers,
-                    plainText: plainText,
-                    url: url
-                )
-                let capture = ClipboardCapture(
-                    payload: payload,
-                    primaryType: .url,
-                    searchableText: plainText ?? url.absoluteString,
-                    source: source
-                )
-                return .snapshot(PasteboardSnapshot(changeCount: pasteboard.changeCount, capture: capture))
+        var capturedItems = [CapturedItem]()
+        for (item, types) in zip(items, typesByItem) {
+            guard types.contains(where: isSupportedCaptureType) else {
+                return .skipped(.unsupported)
             }
-        }
-
-        if let textType {
-            guard let text = item.string(forType: textType) else {
+            guard let captured = capture(item: item, types: types) else {
                 return .skipped(.malformed)
             }
-            guard !text.isEmpty else {
-                return .skipped(.empty)
+            capturedItems.append(captured)
+        }
+
+        guard let first = capturedItems.first else {
+            return .skipped(.empty)
+        }
+
+        let payload = ClipboardPayload(
+            primaryTypeIdentifier: first.payload.primaryTypeIdentifier,
+            representations: first.payload.representations,
+            availableTypeIdentifiers: first.payload.availableTypeIdentifiers,
+            plainText: first.payload.plainText,
+            url: first.payload.url,
+            items: capturedItems.count > 1 ? capturedItems.map(\.payload) : nil
+        )
+        let searchableText = capturedItems
+            .flatMap(\.searchableComponents)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let capture = ClipboardCapture(
+            payload: payload,
+            primaryType: first.primaryType,
+            searchableText: searchableText.isEmpty ? nil : searchableText,
+            source: source
+        )
+        return .snapshot(PasteboardSnapshot(changeCount: pasteboard.changeCount, capture: capture))
+    }
+
+    private func capture(item: NSPasteboardItem, types: [NSPasteboard.PasteboardType]) -> CapturedItem? {
+        let availableTypeIdentifiers = types.map(\.rawValue)
+        let fileURLType = type(.fileURL, in: types)
+        let urlType = type(.URL, in: types)
+        let rtfType = type(.rtf, in: types)
+        let pngType = type(.png, in: types)
+        let tiffType = type(.tiff, in: types)
+        let textType = type(.string, in: types)
+
+        var representations = [ClipboardRepresentation]()
+        var plainText: String?
+        var itemURL: URL?
+        var capturedURLType: NSPasteboard.PasteboardType?
+        var searchableComponents = [String]()
+
+        if let fileURLType {
+            guard let fileURL = url(from: item, type: fileURLType), fileURL.isFileURL else {
+                return nil
             }
-
-            let data = item.data(forType: textType) ?? Data(text.utf8)
-            let textURL = validURL(from: text)
-            let payload = ClipboardPayload(
-                primaryTypeIdentifier: textType.rawValue,
-                representations: [ClipboardRepresentation(typeIdentifier: textType.rawValue, data: data)],
-                availableTypeIdentifiers: availableTypeIdentifiers,
-                plainText: text,
-                url: textURL
-            )
-            let capture = ClipboardCapture(
-                payload: payload,
-                primaryType: textURL != nil ? .url : ClipboardTextClassifier.isLikelyCode(text) ? .code : .text,
-                searchableText: text,
-                source: source
-            )
-            return .snapshot(PasteboardSnapshot(changeCount: pasteboard.changeCount, capture: capture))
+            itemURL = fileURL
+            searchableComponents.append(fileURL.lastPathComponent.isEmpty ? fileURL.absoluteString : fileURL.lastPathComponent)
+            guard let representation = representation(from: item, type: fileURLType, fallback: fileURL.absoluteString) else {
+                return nil
+            }
+            representations.append(representation)
+        }
+        if let urlType,
+           let capturedURL = url(from: item, type: urlType)
+        {
+            if itemURL == nil {
+                itemURL = capturedURL
+            }
+            searchableComponents.append(capturedURL.absoluteString)
+            guard let representation = representation(from: item, type: urlType, fallback: capturedURL.absoluteString) else {
+                return nil
+            }
+            representations.append(representation)
+            capturedURLType = urlType
         }
 
-        if urlType != nil {
-            return .skipped(.malformed)
+        if let rtfType {
+            guard let representation = representation(from: item, type: rtfType) else {
+                return nil
+            }
+            representations.append(representation)
         }
-        return .skipped(.unsupported)
+        if let pngType {
+            guard let representation = representation(from: item, type: pngType) else {
+                return nil
+            }
+            representations.append(representation)
+        }
+        if let tiffType {
+            guard let representation = representation(from: item, type: tiffType) else {
+                return nil
+            }
+            representations.append(representation)
+        }
+        if let textType {
+            guard let text = item.string(forType: textType), !text.isEmpty,
+                  let representation = representation(from: item, type: textType, fallback: text)
+            else {
+                return nil
+            }
+            plainText = text
+            searchableComponents.append(text)
+            representations.append(representation)
+            if itemURL == nil {
+                itemURL = validURL(from: text)
+            }
+        }
+
+        guard let primaryTypeIdentifier = primaryTypeIdentifier(
+            fileURLType: fileURLType,
+            urlType: capturedURLType,
+            rtfType: rtfType,
+            pngType: pngType,
+            tiffType: tiffType,
+            textType: textType
+        ) else {
+            return nil
+        }
+
+        let payload = ClipboardPayloadItem(
+            primaryTypeIdentifier: primaryTypeIdentifier,
+            representations: representations,
+            availableTypeIdentifiers: availableTypeIdentifiers,
+            plainText: plainText,
+            url: itemURL
+        )
+        let primaryType: ClipboardPrimaryType
+        if fileURLType != nil {
+            primaryType = .files
+        } else if pngType != nil || tiffType != nil {
+            primaryType = .image
+        } else if rtfType != nil {
+            primaryType = .richText
+        } else if itemURL != nil {
+            primaryType = .url
+        } else if plainText != nil {
+            // The history worker performs text/code classification off the main actor.
+            primaryType = .text
+        } else {
+            primaryType = .other
+        }
+        return CapturedItem(payload: payload, primaryType: primaryType, searchableComponents: searchableComponents)
+    }
+
+    private func type(_ candidate: NSPasteboard.PasteboardType, in types: [NSPasteboard.PasteboardType]) -> NSPasteboard.PasteboardType? {
+        types.first(where: { $0.rawValue == candidate.rawValue })
+    }
+
+    private func isSupportedCaptureType(_ type: NSPasteboard.PasteboardType) -> Bool {
+        [
+            NSPasteboard.PasteboardType.fileURL,
+            .URL,
+            .rtf,
+            .png,
+            .tiff,
+            .string
+        ].contains(where: { $0.rawValue == type.rawValue })
+    }
+
+    private func primaryTypeIdentifier(
+        fileURLType: NSPasteboard.PasteboardType?,
+        urlType: NSPasteboard.PasteboardType?,
+        rtfType: NSPasteboard.PasteboardType?,
+        pngType: NSPasteboard.PasteboardType?,
+        tiffType: NSPasteboard.PasteboardType?,
+        textType: NSPasteboard.PasteboardType?
+    ) -> String? {
+        fileURLType?.rawValue
+            ?? pngType?.rawValue
+            ?? tiffType?.rawValue
+            ?? rtfType?.rawValue
+            ?? urlType?.rawValue
+            ?? textType?.rawValue
+    }
+
+    private func representation(
+        from item: NSPasteboardItem,
+        type: NSPasteboard.PasteboardType,
+        fallback: String? = nil
+    ) -> ClipboardRepresentation? {
+        if let data = item.data(forType: type) {
+            return ClipboardRepresentation(typeIdentifier: type.rawValue, data: data)
+        }
+        guard let fallback else {
+            return nil
+        }
+        return ClipboardRepresentation(typeIdentifier: type.rawValue, data: Data(fallback.utf8))
+    }
+
+    private func url(from item: NSPasteboardItem, type: NSPasteboard.PasteboardType) -> URL? {
+        let urlText = item.string(forType: type)
+            ?? (item.propertyList(forType: type) as? String)
+            ?? (item.propertyList(forType: type) as? URL)?.absoluteString
+        guard let urlText else {
+            return nil
+        }
+        return validURL(from: urlText)
+    }
+
+    private struct CapturedItem {
+        let payload: ClipboardPayloadItem
+        let primaryType: ClipboardPrimaryType
+        let searchableComponents: [String]
+    }
+
+    private struct SourceMetadata {
+        let displaySource: ClipboardSource?
+        let bundleIdentifiers: Set<String>
     }
 
     private func validURL(from string: String) -> URL? {

@@ -19,10 +19,55 @@ public enum ClipboardHasher {
     }
 
     public static func identity(for payload: ClipboardPayload) -> String {
-        var identityData = Data()
-        appendField(Data(payload.primaryTypeIdentifier.utf8), to: &identityData)
+        if let items = payload.items {
+            return identity(forOrderedItems: items)
+        }
 
-        let representations = payload.representations.sorted {
+        return legacyIdentity(for: payload)
+    }
+
+    private static func legacyIdentity(for payload: ClipboardPayload) -> String {
+        var identityData = Data()
+        appendIdentityFields(
+            primaryTypeIdentifier: payload.primaryTypeIdentifier,
+            representations: payload.representations,
+            plainText: payload.plainText,
+            url: payload.url,
+            to: &identityData
+        )
+
+        return sha256(data: identityData)
+    }
+
+    private static func identity(forOrderedItems items: [ClipboardPayloadItem]) -> String {
+        var identityData = Data()
+        appendField(Data("ClipboardPayload.items.v1".utf8), to: &identityData)
+        appendField(Data(String(items.count).utf8), to: &identityData)
+
+        for item in items {
+            var itemIdentityData = Data()
+            appendIdentityFields(
+                primaryTypeIdentifier: item.primaryTypeIdentifier,
+                representations: item.representations,
+                plainText: item.plainText,
+                url: item.url,
+                to: &itemIdentityData
+            )
+            appendField(itemIdentityData, to: &identityData)
+        }
+
+        return sha256(data: identityData)
+    }
+
+    private static func appendIdentityFields(
+        primaryTypeIdentifier: String,
+        representations: [ClipboardRepresentation],
+        plainText: String?,
+        url: URL?,
+        to identityData: inout Data
+    ) {
+        appendField(Data(primaryTypeIdentifier.utf8), to: &identityData)
+        let representations = representations.sorted {
             if $0.typeIdentifier != $1.typeIdentifier {
                 return $0.typeIdentifier < $1.typeIdentifier
             }
@@ -34,17 +79,15 @@ public enum ClipboardHasher {
         }
 
         if representations.isEmpty {
-            if let plainText = payload.plainText {
+            if let plainText {
                 appendField(Data("text".utf8), to: &identityData)
                 appendField(Data(plainText.utf8), to: &identityData)
             }
-            if let url = payload.url {
+            if let url {
                 appendField(Data("url".utf8), to: &identityData)
                 appendField(Data(url.absoluteString.utf8), to: &identityData)
             }
         }
-
-        return sha256(data: identityData)
     }
 
     private static func appendField(_ bytes: Data, to output: inout Data) {

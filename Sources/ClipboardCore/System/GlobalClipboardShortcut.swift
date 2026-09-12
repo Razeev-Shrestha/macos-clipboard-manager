@@ -4,6 +4,31 @@ import Carbon.HIToolbox
 private let globalClipboardHotKeySignature: OSType = 0x434C4950 // "CLIP"
 private let globalClipboardHotKeyIdentifier: UInt32 = 1
 
+/// The persisted native key-code and modifier representation used by Carbon.
+/// The value is intentionally small and Codable so a future recorder can replace
+/// the default without exposing Carbon implementation details to the view layer.
+public struct GlobalClipboardShortcutConfiguration: Codable, Equatable, Sendable {
+    public static let `default` = GlobalClipboardShortcutConfiguration(
+        keyCode: UInt32(kVK_ANSI_V),
+        modifiers: UInt32(cmdKey | shiftKey)
+    )
+
+    public let keyCode: UInt32
+    public let modifiers: UInt32
+
+    public init(keyCode: UInt32, modifiers: UInt32) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+    }
+
+    public var isValid: Bool {
+        let supportedModifiers = UInt32(cmdKey | shiftKey | optionKey | controlKey)
+        return keyCode <= 127
+            && modifiers != 0
+            && (modifiers & ~supportedModifiers) == 0
+    }
+}
+
 // The token is unchecked-Sendable because its mutable generation/active state
 // is always protected by `lock`. `owner` is initialized before registration
 // and read only on MainActor; registration, unregistration, and teardown are
@@ -96,11 +121,14 @@ private func globalClipboardHotKeyHandler(
 /// Monitoring permission. The operating-system status is retained so the host
 /// can surface a conflict or another registration failure.
 public enum GlobalClipboardShortcutError: Error, Equatable, Sendable, CustomStringConvertible {
+    case invalidConfiguration
     case eventHandlerInstallationFailed(status: Int32)
     case registrationFailed(status: Int32)
 
     public var description: String {
         switch self {
+        case .invalidConfiguration:
+            "The global shortcut configuration is invalid."
         case let .eventHandlerInstallationFailed(status):
             "Unable to install the global shortcut event handler (status \(status))."
         case let .registrationFailed(status):
@@ -109,10 +137,11 @@ public enum GlobalClipboardShortcutError: Error, Equatable, Sendable, CustomStri
     }
 }
 
-/// Registers the app-wide Command-Shift-V shortcut without an event tap.
+/// Registers the app-wide shortcut without an event tap or Accessibility permission.
 @MainActor
 public final class GlobalClipboardShortcut {
     public var onPressed: (() -> Void)?
+    public let configuration: GlobalClipboardShortcutConfiguration
 
     private let hotKeyID = EventHotKeyID(
         signature: globalClipboardHotKeySignature,
@@ -122,7 +151,8 @@ public final class GlobalClipboardShortcut {
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
 
-    public init() {
+    public init(configuration: GlobalClipboardShortcutConfiguration = .default) {
+        self.configuration = configuration
         callbackToken = GlobalClipboardHotKeyToken()
         callbackToken.owner = self
     }
@@ -137,10 +167,13 @@ public final class GlobalClipboardShortcut {
         }
     }
 
-    /// Registers Command-Shift-V. Repeated calls are idempotent.
+    /// Registers the configured shortcut. Repeated calls are idempotent.
     public func register() throws {
         guard hotKeyRef == nil else {
             return
+        }
+        guard configuration.isValid else {
+            throw GlobalClipboardShortcutError.invalidConfiguration
         }
 
         var newEventHandlerRef: EventHandlerRef?
@@ -164,8 +197,8 @@ public final class GlobalClipboardShortcut {
 
         var newHotKeyRef: EventHotKeyRef?
         let registrationStatus = RegisterEventHotKey(
-            UInt32(kVK_ANSI_V),
-            UInt32(cmdKey | shiftKey),
+            configuration.keyCode,
+            configuration.modifiers,
             hotKeyID,
             GetApplicationEventTarget(),
             OptionBits(kEventHotKeyExclusive),

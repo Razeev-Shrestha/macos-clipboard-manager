@@ -6,6 +6,7 @@ import XCTest
 private final class PanelModelPasteboard: ClipboardPasteboard {
     var changeCount = 0
     var accessState: PasteboardAccessState = .unknown
+    private(set) var excludedBundleIdentifiers: Set<String> = []
 
     func readSnapshotIfStable(expectedChangeCount: Int) -> PasteboardReadResult {
         .skipped(.empty)
@@ -13,6 +14,10 @@ private final class PanelModelPasteboard: ClipboardPasteboard {
 
     func write(payload: ClipboardPayload) -> PasteboardWriteResult {
         .failed
+    }
+
+    func setExcludedBundleIdentifiers(_ identifiers: Set<String>) {
+        excludedBundleIdentifiers = identifiers
     }
 }
 
@@ -208,6 +213,131 @@ final class ClipboardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(requested.first?.1, .copyOnly)
     }
 
+    func testCommandPRequestsPinToggleForReadyStorage() async {
+        let model = await makeReadyModel()
+        let itemID = UUID()
+        var requestedID: UUID?
+        model.onPinRequested = { requestedID = $0 }
+        model.acceptPublishedResults(results([itemID]))
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(
+            keyCode: 35,
+            modifiers: .command,
+            characters: "p",
+            charactersIgnoringModifiers: "p"
+        )))
+        XCTAssertEqual(requestedID, itemID)
+        await model.controller.shutdown()
+    }
+
+    func testCommandDeleteRequiresConfirmationBeforeDeletion() async {
+        let model = await makeReadyModel()
+        let itemID = UUID()
+        var requestedID: UUID?
+        model.onDeleteRequested = { requestedID = $0 }
+        model.acceptPublishedResults(results([itemID]))
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 51, modifiers: .command)))
+        XCTAssertEqual(model.pendingDeletionID, itemID)
+        XCTAssertNil(requestedID)
+
+        model.confirmDeleteSelected()
+        XCTAssertEqual(requestedID, itemID)
+        XCTAssertNil(model.pendingDeletionID)
+        await model.controller.shutdown()
+    }
+
+    func testPointerSelectionThenSpaceOpensPreviewWithoutCapturingPrintableSearch() {
+        let model = makeModel()
+        let first = UUID()
+        let second = UUID()
+        model.acceptPublishedResults(results([first, second]))
+
+        model.select(second)
+        XCTAssertTrue(model.listOwnsKeyboardFocus)
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 49, characters: " ", charactersIgnoringModifiers: " ")))
+        XCTAssertTrue(model.isPreviewVisible)
+
+        XCTAssertFalse(model.handleKeyDown(keyEvent(
+            keyCode: 0,
+            characters: "a",
+            charactersIgnoringModifiers: "a"
+        )))
+        XCTAssertFalse(model.listOwnsKeyboardFocus)
+    }
+
+    func testPointerSelectionThenRightArrowOpensPreview() {
+        let model = makeModel()
+        let itemID = UUID()
+        model.acceptPublishedResults(results([itemID]))
+
+        model.select(itemID)
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 124)))
+        XCTAssertTrue(model.isPreviewVisible)
+    }
+
+    func testHistoryMutationFailureIsVisible() {
+        let model = makeModel()
+
+        model.receiveHistoryMutationResult(false, action: "delete this item")
+
+        XCTAssertEqual(model.historyMutationFailure, "Couldn’t delete this item. Try again.")
+    }
+
+    func testClearHistoryRoutesRetentionChoiceForReadyStorage() async {
+        let model = await makeReadyModel()
+        var keepingPinned: Bool?
+        model.onClearHistoryRequested = { keepingPinned = $0 }
+
+        model.clearHistory(keepingPinned: true)
+
+        XCTAssertEqual(keepingPinned, true)
+        await model.controller.shutdown()
+    }
+
+    func testUnavailableStorageBlocksKeyboardAndHistoryMutations() {
+        let model = makeModel()
+        let itemID = UUID()
+        var pinRequests = 0
+        var deleteRequests = 0
+        var clearRequests = 0
+        model.onPinRequested = { _ in pinRequests += 1 }
+        model.onDeleteRequested = { _ in deleteRequests += 1 }
+        model.onClearHistoryRequested = { _ in clearRequests += 1 }
+        model.acceptPublishedResults(results([itemID]))
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(
+            keyCode: 35,
+            modifiers: .command,
+            characters: "p",
+            charactersIgnoringModifiers: "p"
+        )))
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 51, modifiers: .command)))
+        model.clearHistory(keepingPinned: true)
+
+        XCTAssertFalse(model.canMutateHistory)
+        XCTAssertNil(model.pendingDeletionID)
+        XCTAssertEqual(pinRequests, 0)
+        XCTAssertEqual(deleteRequests, 0)
+        XCTAssertEqual(clearRequests, 0)
+    }
+
+    func testClosedPanelDoesNotRestartPreviewLoadFromPublishedResults() {
+        let model = makeModel()
+        let itemID = UUID()
+        model.prepareForOpening(itemIDs: [itemID])
+        model.acceptPublishedResults(results([itemID]))
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 125)))
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 49)))
+        model.didClose()
+
+        model.acceptPublishedResults(results([itemID]))
+
+        XCTAssertFalse(model.isLoadingPreview)
+        XCTAssertNil(model.previewItem)
+    }
+
     func testStaleResultsDoNotRequestPaste() {
         let controller = makeController()
         let model = ClipboardPanelViewModel(controller: controller)
@@ -289,6 +419,13 @@ final class ClipboardPanelViewModelTests: XCTestCase {
 
     private func makeModel() -> ClipboardPanelViewModel {
         ClipboardPanelViewModel(controller: makeController())
+    }
+
+    private func makeReadyModel() async -> ClipboardPanelViewModel {
+        let model = makeModel()
+        await model.controller.start()
+        XCTAssertEqual(model.controller.storageState, .ready)
+        return model
     }
 
     private func results(

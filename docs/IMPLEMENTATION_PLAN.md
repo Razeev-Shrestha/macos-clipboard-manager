@@ -127,14 +127,36 @@ Publication: commit `feat: add automatic paste and focus restoration` and push `
 
 ## Gate E — Full V1 functionality
 
-- [ ] Menu-bar Open/Pause/Clear/Settings/Quit and native ServiceManagement launch at login.
-- [ ] Simple General/Privacy/Permissions settings; retention and menu-bar visibility controls.
-- [ ] Pins, item deletion, `⌘P`/`⌘Delete` bindings, confirmed clear-unpinned/clear-all, pause/resume and source-app presentation.
-- [ ] Images, file/folder URLs and practical rich-text representation preservation.
-- [ ] Local blob storage without eager row loading; deletion/retention remove unreferenced files.
-- [ ] Bundle-ID exclusions and sensitive/transient handling before persistence.
-- [ ] Multi-display placement, sleep/wake lifecycle and resilience verification.
-- [ ] Review privacy, off-main heavy work, tests and native behavior; fix, build/test, commit and push.
+Implementation boundaries for this gate:
+
+- Preserve ordered native pasteboard items and practical text/URL/RTF/image/file representations.
+  Existing single-item payloads keep their Codable representation and content identity. Check privacy
+  markers and excluded sources across every pasteboard item before reading normal payload bytes.
+- Keep large payloads in private local blob storage, migrate existing SQLite history safely, and hydrate
+  only a selected item. Hashing, rich-text enrichment and blob I/O must stay outside main-actor UI work.
+  Delete/clear/retention clean unreferenced payloads while preserving pins and transaction consistency.
+- Persist simple settings independently of clipboard contents. Debug validation uses isolated defaults
+  alongside its named board/database. Serialize history controls with accepted capture writes; pausing
+  and sleep/wake must not replay content copied while recording was suspended.
+- SwiftUI provides menu-bar actions, General/Privacy/Permissions settings and explicit destructive-clear
+  confirmation. Native helpers own configurable Carbon registration, login service status and lifecycle.
+  Preserve the working paste coordinator and panel keyboard/focus contracts.
+- Delegate capture/models, persistence, and runtime controls with separate file ownership. Integrate the
+  App UI after their API contracts stabilize, then use fresh independent review and final native QA.
+
+- [x] Menu-bar Open/Pause/Clear/Settings/Quit and native ServiceManagement launch at login.
+- [x] Simple General/Privacy/Permissions settings; retention and menu-bar visibility controls.
+- [x] Pins, item deletion, `⌘P`/`⌘Delete` bindings, confirmed clear-unpinned/clear-all, pause/resume and source-app presentation.
+- [x] Images, file/folder URLs and practical rich-text representation preservation.
+- [x] Local blob storage without eager row loading; deletion/retention remove unreferenced files.
+- [x] Bundle-ID exclusions and sensitive/transient handling before persistence.
+- [x] Multi-display placement, sleep/wake lifecycle and resilience verification.
+- [x] Review privacy, off-main heavy work, tests and native behavior; fix, build/test, commit and push.
+
+Acceptance: independent App/Core review, 145 warning-as-error tests, clean signed Debug build,
+strict signature verification and native rich/privacy/control/restart/recopy checks pass. Available
+geometry/lifecycle tests pass; physical display, sleep and subsequent-login limits remain explicit in STATUS.md.
+Publication: `feat: complete v1 clipboard functionality` on `main`.
 
 ## Gate F — Polish and trusted-tester distribution
 

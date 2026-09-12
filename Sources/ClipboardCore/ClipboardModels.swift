@@ -34,10 +34,9 @@ public struct ClipboardRepresentation: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// The restorable payload and the representation metadata observed on the pasteboard.
-/// `availableTypeIdentifiers` intentionally preserves types that are not read yet so a
-/// later rich-data phase can extend capture without changing the history model.
-public struct ClipboardPayload: Codable, Equatable, Hashable, Sendable {
+/// One ordered item from a pasteboard payload. Pasteboards may carry several items
+/// (for example, a group of copied files), each with its own representations.
+public struct ClipboardPayloadItem: Codable, Equatable, Hashable, Sendable {
     public let primaryTypeIdentifier: String
     public let representations: [ClipboardRepresentation]
     public let availableTypeIdentifiers: [String]
@@ -60,6 +59,46 @@ public struct ClipboardPayload: Codable, Equatable, Hashable, Sendable {
 
     public var byteSize: Int {
         representations.reduce(into: 0) { total, representation in
+            total += representation.data.count
+        }
+    }
+}
+
+/// The restorable payload and the representation metadata observed on the pasteboard.
+/// The legacy fields remain a compatibility view of the first item. `items` is only
+/// populated when the original pasteboard had more than one item, preserving existing
+/// persisted payloads and their identities.
+public struct ClipboardPayload: Codable, Equatable, Hashable, Sendable {
+    public let primaryTypeIdentifier: String
+    public let representations: [ClipboardRepresentation]
+    public let availableTypeIdentifiers: [String]
+    public let plainText: String?
+    public let url: URL?
+    public let items: [ClipboardPayloadItem]?
+
+    public init(
+        primaryTypeIdentifier: String,
+        representations: [ClipboardRepresentation],
+        availableTypeIdentifiers: [String] = [],
+        plainText: String? = nil,
+        url: URL? = nil,
+        items: [ClipboardPayloadItem]? = nil
+    ) {
+        self.primaryTypeIdentifier = primaryTypeIdentifier
+        self.representations = representations
+        self.availableTypeIdentifiers = availableTypeIdentifiers
+        self.plainText = plainText
+        self.url = url
+        self.items = items
+    }
+
+    public var byteSize: Int {
+        if let items {
+            return items.reduce(into: 0) { total, item in
+                total += item.byteSize
+            }
+        }
+        return representations.reduce(into: 0) { total, representation in
             total += representation.data.count
         }
     }
