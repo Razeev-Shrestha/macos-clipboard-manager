@@ -6,6 +6,8 @@ import SwiftUI
 struct ClipboardPanelView: View {
     @ObservedObject var model: ClipboardPanelViewModel
     @ObservedObject var controller: ClipboardHistoryController
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @FocusState private var isSearchFocused: Bool
     @State private var focusRequestGeneration = 0
     @State private var clearConfirmation = false
@@ -16,15 +18,24 @@ struct ClipboardPanelView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            historyContent
-            Divider()
-            footer
+        GlassEffectContainer(spacing: 12) {
+            VStack(spacing: 0) {
+                header
+                Divider()
+                historyContent
+                Divider()
+                footer
+            }
         }
         .frame(minWidth: 620, minHeight: 420)
-        .background(.regularMaterial)
+        .background {
+            if reduceTransparency {
+                Color(nsColor: .windowBackgroundColor)
+            } else {
+                Rectangle().fill(.regularMaterial)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .onAppear {
             if model.searchFocusRequest > 0 {
                 focusSearchFieldAfterKeyWindowActivation()
@@ -86,7 +97,7 @@ struct ClipboardPanelView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .clipboardChrome(reduceTransparency: reduceTransparency, cornerRadius: 16)
 
             Picker("History filter", selection: $controller.filter) {
                 ForEach(ClipboardHistoryFilter.allCases, id: \.self) { filter in
@@ -95,6 +106,7 @@ struct ClipboardPanelView: View {
             }
             .pickerStyle(.segmented)
             .accessibilityLabel("Clipboard history filter")
+            .clipboardChrome(reduceTransparency: reduceTransparency, cornerRadius: 14)
         }
         .padding(12)
     }
@@ -174,12 +186,27 @@ struct ClipboardPanelView: View {
                         ClipboardHistoryRow(
                             item: item,
                             visibleNumber: model.visibleNumber(for: item.id),
-                            isSelected: model.selectedID == item.id
+                            isSelected: model.selectedID == item.id,
+                            increasedContrast: colorSchemeContrast == .increased,
+                            select: { model.select(item.id) },
+                            paste: {
+                                model.select(item.id)
+                                model.pasteSelected()
+                            },
+                            copy: {
+                                model.select(item.id)
+                                model.copySelected()
+                            },
+                            togglePin: {
+                                model.select(item.id)
+                                model.togglePinSelected()
+                            },
+                            delete: {
+                                model.select(item.id)
+                                model.deleteSelected()
+                            }
                         )
                         .id(item.id)
-                        .onTapGesture {
-                            model.select(item.id)
-                        }
                         .onTapGesture(count: 2) {
                             model.select(item.id)
                             model.pasteSelected()
@@ -189,6 +216,7 @@ struct ClipboardPanelView: View {
                 .padding(8)
                 .scrollTargetLayout()
             }
+            .background(Color(nsColor: .textBackgroundColor))
             .onScrollTargetVisibilityChange(idType: UUID.self) { ids in
                 model.updateVisibleItems(ids)
             }
@@ -285,7 +313,7 @@ struct ClipboardPanelView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial)
+        .clipboardChrome(reduceTransparency: reduceTransparency, cornerRadius: 18)
     }
 
     private var hasActiveSearchOrFilter: Bool {
@@ -300,7 +328,7 @@ struct ClipboardPanelView: View {
         case .unknown, .allowed:
             hasActiveSearchOrFilter
                 ? "Adjust your search or select another filter."
-                : "Copy text or a URL in another app to add it here."
+                : "Copy text, links, rich text, images, or files in another app to add them here."
         }
     }
 }
@@ -309,23 +337,51 @@ private struct ClipboardHistoryRow: View {
     let item: ClipboardItem
     let visibleNumber: Int?
     let isSelected: Bool
+    let increasedContrast: Bool
+    let select: () -> Void
+    let paste: () -> Void
+    let copy: () -> Void
+    let togglePin: () -> Void
+    let delete: () -> Void
 
     var body: some View {
+        rowContent
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .onTapGesture(perform: select)
+            .background(rowBackground)
+            .overlay(rowBorder)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityHint("Press to select. Actions are available for paste, copy, pinning, and deletion.")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityAction { select() }
+            .accessibilityAction(named: "Paste") { paste() }
+            .accessibilityAction(named: "Copy") { copy() }
+            .accessibilityAction(named: item.isPinned ? "Unpin" : "Pin") { togglePin() }
+            .accessibilityAction(named: "Delete") { delete() }
+    }
+
+    @ViewBuilder
+    private var rowContent: some View {
+        let visibleNumberText = visibleNumber.map { String($0) } ?? ""
         HStack(alignment: .top, spacing: 10) {
-            Text(visibleNumber.map(String.init) ?? "")
+            Text(visibleNumberText)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(width: 18, alignment: .trailing)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.searchableText ?? item.primaryType.displayName)
+                Text(primaryText)
                     .font(contentFont)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 5) {
-                    Text(item.sourceAppName ?? item.sourceBundleID ?? "Unknown App")
+                    Text(sourceName)
                     Text("·")
-                    Text(item.createdAt, style: .relative)
+                    Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
                     Text("·")
                     Text(item.primaryType.displayName)
                 }
@@ -337,23 +393,23 @@ private struct ClipboardHistoryRow: View {
                 Image(systemName: "pin.fill")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel("Pinned")
+                .accessibilityLabel("Pinned")
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.20) : .clear)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isSelected ? Color.accentColor.opacity(0.8) : .clear, lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(selectionFill)
+    }
+
+    private var rowBorder: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: increasedContrast ? 2 : 1)
+    }
+
+    private var selectionFill: Color {
+        isSelected ? Color.accentColor.opacity(increasedContrast ? 0.42 : 0.24) : .clear
     }
 
     private var contentFont: Font {
@@ -365,9 +421,20 @@ private struct ClipboardHistoryRow: View {
         }
     }
 
+    private var primaryText: String {
+        item.searchableText ?? item.primaryType.displayName
+    }
+
+    private var sourceName: String {
+        item.sourceAppName ?? item.sourceBundleID ?? "Unknown App"
+    }
+
     private var accessibilityLabel: String {
         let prefix = visibleNumber.map { "\($0). " } ?? ""
-        return prefix + (item.searchableText ?? item.primaryType.displayName)
+        let content = primaryText
+        let source = sourceName
+        let pinned = item.isPinned ? ", pinned" : ""
+        return "\(prefix)\(content), \(item.primaryType.displayName), from \(source), \(item.createdAt.formatted(date: .abbreviated, time: .shortened))\(pinned)"
     }
 }
 
@@ -416,7 +483,7 @@ private struct ClipboardPreview: View {
         }
         .padding(16)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(.regularMaterial)
+        .background(Color(nsColor: .textBackgroundColor))
     }
 
     @ViewBuilder
@@ -433,7 +500,9 @@ private struct ClipboardPreview: View {
         {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, payloadItem in
-                    Text(payloadItem.url?.lastPathComponent ?? payloadItem.url?.absoluteString ?? "File")
+                    let fileName = payloadItem.url?.lastPathComponent ?? payloadItem.url?.absoluteString ?? "File"
+                    Text(fileName)
+                        .accessibilityLabel("File \(fileName)")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -467,6 +536,7 @@ private struct BoundedClipboardImage: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
+                    .accessibilityLabel("Clipboard image preview")
             } else if didFail {
                 ContentUnavailableView("Image Preview Unavailable", systemImage: "exclamationmark.triangle")
             } else {
@@ -508,6 +578,20 @@ private actor ClipboardPreviewImageDecoder {
             return nil
         }
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options)
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func clipboardChrome(reduceTransparency: Bool, cornerRadius: CGFloat) -> some View {
+        if reduceTransparency {
+            self.background(
+                Color(nsColor: .windowBackgroundColor),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        } else {
+            self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+        }
     }
 }
 

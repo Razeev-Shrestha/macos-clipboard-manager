@@ -160,14 +160,36 @@ Publication: `feat: complete v1 clipboard functionality` on `main`.
 
 ## Gate F — Polish and trusted-tester distribution
 
-- [ ] Native Liquid Glass on shell/controls; readable opaque/material content, semantic colors and SF Symbols.
-- [ ] VoiceOver labels, focus visibility, Light/Dark, Increase Contrast, Reduce Transparency and Reduce Motion.
-- [ ] Measure idle monitoring, text-history memory, panel/search responsiveness and payload hot paths.
-- [ ] Clean Release build and locally verifiable `.app`; optional `.dmg` only if useful.
-- [ ] Write build/run/tester instructions with honest signing/notarization and permission expectations.
-- [ ] Complete requirement-by-requirement checklist with PASS/PARTIAL/NOT IMPLEMENTED/BLOCKED and evidence.
-- [ ] Final fresh independent review of architecture, correctness, privacy, performance, UI, tests and packaging.
-- [ ] Fix medium/high findings, rerun full validation, inspect artifacts/diff, commit and push final milestone.
+Implementation boundaries for this gate:
+
+- Add native macOS 26 glass only around chrome/controls. Keep clipboard text, images and dense metadata
+  on opaque semantic surfaces. Respect system contrast/transparency/motion settings and expose each
+  row as an individually labeled Accessibility element with working actions.
+- Preserve the accepted capture, persistence, keyboard, focus and paste contracts. Main owns native UI
+  interaction and restores all temporarily changed appearance/accessibility preferences afterward.
+- Measure optimized synthetic core paths separately from the actual Debug app's idle memory/CPU and
+  interaction timing. Record hardware, setup, counts and automation overhead; do not invent targets.
+- Produce a reproducible clean, locally signed Release app and ZIP without paid credentials or publication.
+  Inspect signatures, supported architectures, bundle metadata and the extracted artifact. Never launch
+  Release with Debug isolation flags, which are absent in Release builds.
+- Use fresh independent final review, update every requirement row with evidence/limits, and publish only
+  the accepted source milestone. Build products and synthetic data stay under ignored `build/`.
+
+- [x] Native Liquid Glass on shell/controls; readable opaque content, semantic colors and SF Symbols.
+- [x] VoiceOver labels/actions, focus visibility, Light/Dark, Increase Contrast, Reduce Transparency and Reduce Motion; record the spoken-VoiceOver environment limitation.
+- [x] Measure idle monitoring, text-history memory, panel/search responsiveness and payload hot paths.
+- [x] Clean Release build and locally verifiable `.app` plus ZIP; DMG is unnecessary for this scope.
+- [x] Write build/run/tester instructions with honest signing/notarization and permission expectations.
+- [x] Complete requirement-by-requirement checklist with PASS/PARTIAL/NOT IMPLEMENTED/BLOCKED and evidence.
+- [x] Final fresh independent review of architecture, correctness, privacy, performance, UI, tests and packaging.
+- [x] Fix medium/high findings, rerun full validation, inspect artifacts/diff and prepare the final milestone.
+
+Acceptance: 145 warning-as-error tests, clean Debug and universal Release builds, strict original/extracted
+package checks, independent reviews and scoped native appearance/performance checks pass. Static row
+timestamps reduce 1,000-row open-panel idle CPU from 14.8% to 0.083% of one core. Native hardware,
+VoiceOver speech and automation-focus limits remain explicit in STATUS.md and the requirement checklist.
+Publication: `release: prepare macos clipboard manager v1` on `main`; Git history and the checked remote
+are the final commit/push receipt.
 
 ## Verification rules
 

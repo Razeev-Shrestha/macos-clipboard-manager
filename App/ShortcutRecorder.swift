@@ -66,7 +66,7 @@ final class ShortcutRecorderView: NSView {
     }
 
     override var acceptsFirstResponder: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: 180, height: 28) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 220, height: 28) }
 
     override func mouseDown(with event: NSEvent) {
         arm()
@@ -129,10 +129,19 @@ final class ShortcutRecorderView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.controlBackgroundColor.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
-        let borderColor: NSColor = isArmed ? .controlAccentColor : .separatorColor
+        let isFocused = window?.firstResponder === self
+        let borderColor: NSColor = isArmed || isFocused ? .controlAccentColor : .separatorColor
         borderColor.setStroke()
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6).stroke()
-        let text = isArmed ? "Press a shortcut…" : ShortcutPresentation.text(for: configuration)
+        let borderWidth: CGFloat = isArmed ? 2 : (isFocused ? 1.5 : 1)
+        let border = NSBezierPath(roundedRect: bounds.insetBy(dx: borderWidth / 2, dy: borderWidth / 2), xRadius: 6, yRadius: 6)
+        border.lineWidth = borderWidth
+        border.stroke()
+        let text: String
+        if isArmed {
+            text = "Press a shortcut…"
+        } else {
+            text = ShortcutPresentation.text(for: configuration)
+        }
         text.draw(
             at: NSPoint(x: 8, y: max(4, (bounds.height - 16) / 2)),
             withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor]
@@ -143,7 +152,13 @@ final class ShortcutRecorderView: NSView {
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func accessibilityLabel() -> String? { "Global shortcut recorder" }
     override func accessibilityValue() -> Any? {
-        isArmed ? "Recording shortcut" : ShortcutPresentation.text(for: configuration)
+        if isArmed {
+            return "Recording shortcut"
+        }
+        if window?.firstResponder === self {
+            return "\(ShortcutPresentation.text(for: configuration)), ready to record with Return"
+        }
+        return ShortcutPresentation.text(for: configuration)
     }
     override func accessibilityHelp() -> String? {
         "Press to record one global shortcut. Press Escape to cancel recording."

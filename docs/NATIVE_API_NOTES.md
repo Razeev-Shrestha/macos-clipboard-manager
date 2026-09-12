@@ -158,3 +158,19 @@ AppKit validates the menu. This avoids a stale availability snapshot.
 - [NSMenu.autoenablesItems](https://developer.apple.com/documentation/appkit/nsmenu/autoenablesitems)
 - [NSMenuItem.isEnabled](https://developer.apple.com/documentation/appkit/nsmenuitem/isenabled)
 - [NSMenuItemValidation.validateMenuItem](https://developer.apple.com/documentation/appkit/nsmenuitemvalidation/validatemenuitem(_:))
+
+## Native glass and accessibility — Gate F
+
+Use `GlassEffectContainer` to coordinate native glass chrome and controls. History and preview
+surfaces remain opaque semantic backgrounds so clipboard content stays readable. When
+`accessibilityReduceTransparency` is enabled, use an opaque chrome fallback. Native
+`colorSchemeContrast` drives stronger selection boundaries; Light/Dark colors remain semantic.
+
+Rows expose one labeled accessibility element with selection and named Copy, Paste, Pin/Unpin
+and Delete actions. The shortcut recorder exposes a short value and separate instructions.
+The app adds no decorative animation and resizes the panel with `animate: false`, including
+when Reduce Motion is enabled. DESIGN.md's fade/scale is a recommended feel, not a required effect.
+
+Sources: [GlassEffectContainer](https://developer.apple.com/documentation/swiftui/glasseffectcontainer),
+[Reduce Transparency](https://developer.apple.com/documentation/swiftui/environmentvalues/accessibilityreducetransparency),
+[accessible controls](https://developer.apple.com/documentation/swiftui/accessible-controls).

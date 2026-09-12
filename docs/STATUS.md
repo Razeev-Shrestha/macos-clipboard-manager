@@ -1,7 +1,8 @@
 # Implementation status
 
-Full V1 goal: **in progress**. Gates A–E have passed their quality gates.
-Final appearance, performance measurement and distribution remain Gate F.
+V1 implementation and trusted-tester packaging: **accepted through Gate F**, with the native-environment
+limits below. The final milestone uses `release: prepare macos clipboard manager v1` on `main`;
+Git history and the checked remote are the publication receipt.
 
 | Gate | Status | Evidence / remaining work |
 | --- | --- | --- |
@@ -10,7 +11,7 @@ Final appearance, performance measurement and distribution remain Gate F.
 | C — Keyboard workflow | Accepted | Independent review, 59 tests and clean signed build pass. User confirmed normal-build search results and global shortcut close. Native copy/navigation/preview and earlier editor-return checks pass. |
 | D — Automatic paste | Accepted | Independent review, 84 tests, clean signed build and strict signature check pass. Native trusted insertion, explicit copy-only and denied-destination fallback pass with synthetic content. |
 | E — Full V1 | Accepted | Independent App/Core review, 145 warning-as-error tests, clean signed build, and scoped native rich/privacy/control/restart checks pass. |
-| F — Polish/distribution | Not started | Requires accepted Gate E and full final audit. |
+| F — Polish/distribution | Accepted | Independent final review, 145 warning-as-error tests, clean Debug/universal Release builds, appearance/performance checks and strict app/ZIP verification pass. |
 
 ## Environment
 
@@ -249,5 +250,49 @@ Gate A checks used isolated named pasteboards. The real General Clipboard consen
 interaction was not changed or manually exercised; access policy transitions were tested through the
 actual boundary with injected policy values. No production clipboard payload was used for verification.
 
-Unavailable native display/sleep/login interactions, final appearance/performance and distribution
-remain tracked in `IMPLEMENTATION_PLAN.md` and `REQUIREMENTS_CHECKLIST.md`.
+Unavailable display/sleep/login interactions, direct status-menu targeting and VoiceOver spoken
+navigation remain explicitly tracked in `REQUIREMENTS_CHECKLIST.md`. Appearance, performance and
+local distribution checks are complete. These limits are tester follow-up, not missing implementations.
+
+## Gate F acceptance — 2026-09-12
+
+- Gate E published as `0d4341c29fa9b8d593ce0b90696f82a7fb6be71c`; remote hash matched and the worktree was clean.
+- Delegated native appearance/accessibility, isolated performance harness and Release packaging with separate file ownership.
+- Main recorded original system settings before appearance QA: Dark/Clear, Increase Contrast off,
+  Reduce Transparency off, Reduce Motion off and VoiceOver off. Every temporary change was restored
+  through System Settings and read back after QA.
+- Native Light/Dark inspection verified readable opaque history and text/image previews, with native
+  glass restricted to chrome and controls. Reduce Transparency makes chrome opaque. Increase Contrast
+  strengthens row selection and native control boundaries in both appearances. Reduce Motion search
+  works; the app uses static presentation without decorative animation or animated panel resizing.
+- History rows expose individual accessibility labels, selected state and named actions. AX Pin changed
+  the pin state and AX Copy restored the exact synthetic image bytes. Image previews have a descriptive
+  label. The shortcut recorder's compact value fits, Return arms recording and Escape cancels.
+- VoiceOver's system switch briefly accepted On but reverted Off on two settled attempts. Accessibility
+  structure and actions were inspected independently; spoken announcements and VoiceOver cursor/rotor
+  navigation remain unverified. No successful spoken check is claimed.
+- The final 1,000-row native Debug check measured 0.083% of one core with the expanded panel open and
+  0.050% closed over separate 60-second intervals. RSS was 112.02–115.22 MiB open and 113.06–113.08 MiB
+  closed. Profiling identified dynamic relative-date text as the original 14.8% open-panel CPU cost;
+  static localized copied timestamps removed that work. See PERFORMANCE.md for methods and limits.
+- Final search and selected preview showed the expected synthetic result. Observed open/search/preview
+  times were 534/465/494 ms including automation, not app-only or physical-key latency. The optimized
+  harness measures 1,000 metadata rows, FTS, selected hydration and 1 MiB hash/blob paths separately.
+- Final CmdReturn restored the exact selected synthetic text without editor insertion; content and FTS
+  stayed at two rows with integrity `ok`. Automatic-paste retries correctly fell back when targeted
+  automation captured a destination outside the dedicated editor allowlist. The successful native trusted
+  insertion remains the Gate D evidence; no new Gate F insertion is claimed. Copy/focus coordination
+  source is unchanged by the visual work. All native test apps quit normally and their logs are empty.
+- The benchmark accepts only its fixed synthetic fixture and refuses unknown options, symlinks, unexpected
+  file kinds and open SQLite files. Sacrificial guard checks pass. This also prevents a repeat of a test-only
+  fixture reset collision encountered during parallel review. Production clipboard/storage were untouched.
+- Fresh independent UI and final Core/privacy/concurrency/performance/packaging reviews have no remaining
+  medium or high issue. All accepted findings were fixed and re-reviewed. The final clean signed Debug
+  build, all 145 warning-as-error tests and a fresh universal Release build pass. All 39 app/project/test
+  build-input hashes remained unchanged. The only Xcode warning is skipped AppIntents metadata extraction
+  because this app does not depend on AppIntents.
+- `Scripts/package-release.sh` produced the `.app`, ZIP, source/build metadata and SHA-256 checksums.
+  Both original and ZIP-extracted apps pass strict ad-hoc signature and bundle validation, contain arm64
+  and x86_64 slices, and omit all Debug test flags. Release was inspected without launching it against
+  the General pasteboard. Packages stay in ignored `build/Distribution/`; no release, tag, credentials
+  or generated product is committed. The tester guide explains local approval and permission behavior.

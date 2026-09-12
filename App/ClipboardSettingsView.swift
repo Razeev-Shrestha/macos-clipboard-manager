@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ClipboardSettingsView: View {
     let delegate: AppDelegate
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @ObservedObject private var settings: ClipboardSettingsStore
     @ObservedObject private var launchAtLogin: LaunchAtLoginController
     @ObservedObject private var panelModel: ClipboardPanelViewModel
@@ -19,15 +20,18 @@ struct ClipboardSettingsView: View {
     }
 
     var body: some View {
-        TabView {
-            general
-                .tabItem { Label("General", systemImage: "gear") }
-            privacy
-                .tabItem { Label("Privacy", systemImage: "hand.raised") }
-            permissions
-                .tabItem { Label("Permissions", systemImage: "checkmark.shield") }
+        GlassEffectContainer(spacing: 12) {
+            TabView {
+                general
+                    .tabItem { Label("General", systemImage: "gear") }
+                privacy
+                    .tabItem { Label("Privacy", systemImage: "hand.raised") }
+                permissions
+                    .tabItem { Label("Permissions", systemImage: "checkmark.shield") }
+            }
+            .padding(20)
+            .clipboardChrome(reduceTransparency: reduceTransparency, cornerRadius: 22)
         }
-        .padding(20)
         .frame(width: 560, height: 400)
         .onAppear {
             refreshNativeStatus()

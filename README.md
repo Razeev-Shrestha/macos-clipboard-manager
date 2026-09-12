@@ -5,9 +5,15 @@ uses Swift 6, SwiftUI, and native macOS frameworks only.
 
 ## Full V1 functionality
 
-Gates A–E are accepted and independently reviewed, with 145
-passing tests and a clean signed Debug build. Final appearance and trusted-tester packaging remain
-Gate F. See the precise [validation evidence and remaining checks](docs/STATUS.md).
+Gates A–F are implemented and independently reviewed. All 145 tests pass with Swift warnings
+treated as errors, and clean Debug and universal Release builds pass. The app is packaged for
+trusted testers with native Liquid Glass chrome and readable clipboard content. See the precise
+[validation evidence and native-environment limits](docs/STATUS.md).
+
+Build a verified `.app` and ZIP with `Scripts/package-release.sh`. The package supports Apple silicon
+and Intel, is locally ad-hoc signed, and is not notarized. Follow the [tester guide](docs/TESTER_GUIDE.md)
+for installation, permissions and keyboard checks. [Performance measurements](docs/PERFORMANCE.md)
+include 1,000-item history, search, large payloads and native idle CPU/memory.
 
 The app stores accepted text, URLs, practical rich text, images, and ordered file/folder references in local SQLite history at
 `~/Library/Application Support/com.example.ClipboardManager/history.sqlite`.
