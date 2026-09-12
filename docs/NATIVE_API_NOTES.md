@@ -47,3 +47,36 @@ reports `ENABLE_FTS5=1`; a temporary in-memory FTS5 table can be created success
 Native SQLite is sufficient; no external package is needed for the persistence milestone.
 
 Source: [SQLite FTS5 documentation](https://www.sqlite.org/fts5.html).
+
+## Global shortcut and panel
+
+The installed HIToolbox `CarbonEvents.h` exposes `RegisterEventHotKey` for a virtual key and modifiers,
+including exclusive registration and an explicit conflict error. Registration/unregistration are not thread-safe,
+so this app owns both on the main actor. This is a native shortcut registration, not a keyboard event tap.
+No Accessibility or Input Monitoring request is introduced for the shortcut.
+
+The utility uses an activating `NSPanel` with a reusable SwiftUI hosting view. It captures the previous application
+before activation and returns focus only while the clipboard app still owns the interaction; switching to another
+app dismisses the panel without forcing focus back. Geometry is clamped to the chosen screen's visible frame.
+
+macOS activation is a request that depends on the current interaction context. When returning control from the
+active clipboard app, the guarded close path first calls `NSApp.yieldActivation(to:)`, then asks the captured
+`NSRunningApplication` to activate. Yielding supplies the cooperative handoff context; it does not itself activate
+the other app or prove that its editor has focus. Native foreground and typing checks remain necessary.
+
+Panel keyboard handling sits in the window's `sendEvent(_:)` override before the focused text editor consumes events.
+Unhandled events continue through AppKit. Modifier matching considers Command/Shift/Option/Control separately from
+Caps Lock, numeric-pad and function flags so normal arrow events remain usable. Actual shortcut, field-editor and
+focus behavior still requires native interaction checks; unit geometry/state tests do not establish those results.
+
+Search focus follows the panel's key-window notification. SwiftUI's `FocusState` removes field focus when set to false,
+so repeated opening requests must not clear a field that already accepts input. Pending requests are coalesced and
+only the latest may request focus after a key window exists. Desktop activation and first-input behavior still require
+native validation beyond a targeted window tool's reported focus label.
+
+Sources: installed Xcode SDK `Carbon.framework/Frameworks/HIToolbox.framework/Headers/CarbonEvents.h`,
+[NSPanel](https://developer.apple.com/documentation/appkit/nspanel),
+[window event dispatch](https://developer.apple.com/documentation/appkit/nswindow/sendevent(_:)),
+[SwiftUI focus state](https://developer.apple.com/documentation/swiftui/focusstate),
+[cooperative application activation](https://developer.apple.com/documentation/appkit/passing-control-from-one-app-to-another-with-cooperative-activation),
+[application activation](https://developer.apple.com/documentation/appkit/nsrunningapplication/activate(options:)).

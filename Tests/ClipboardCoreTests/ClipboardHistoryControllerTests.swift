@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import ClipboardCore
@@ -24,6 +25,115 @@ private final class ControllerPasteboard: ClipboardPasteboard {
 
 @MainActor
 final class ClipboardHistoryControllerTests: XCTestCase {
+    func testCopyItemRestoresPersistedPayloadAndUpdatesOnlyUseTime() async throws {
+        let fixture = try ControllerDatabaseFixture()
+        defer { fixture.remove() }
+
+        let repository = ClipboardHistoryRepository(databaseURL: fixture.databaseURL)
+        try await repository.open()
+        let createdAt = Date().addingTimeInterval(-60)
+        let stored = try await repository.record(makeItem(text: "synthetic copy payload", createdAt: createdAt), now: createdAt)
+        _ = try await repository.setPinned(true, for: stored.id)
+        await repository.close()
+
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let controller = ClipboardHistoryController(
+            pasteboard: NSPasteboardBoundary(pasteboard: pasteboard),
+            databaseURL: fixture.databaseURL
+        )
+        await controller.start()
+
+        let copiedSuccessfully = await controller.copyItem(id: stored.id)
+        XCTAssertTrue(copiedSuccessfully)
+        XCTAssertEqual(pasteboard.string(forType: .string), "synthetic copy payload")
+        XCTAssertEqual(
+            controller.pollNow(),
+            .selfWriteSuppressed(changeCount: pasteboard.changeCount)
+        )
+        await controller.flush()
+
+        let reopened = ClipboardHistoryRepository(databaseURL: fixture.databaseURL)
+        try await reopened.open()
+        let copied = try await reopened.item(id: stored.id)
+        XCTAssertEqual(copied?.id, stored.id)
+        XCTAssertTrue(copied?.isPinned == true)
+        XCTAssertEqual(copied?.createdAt, createdAt)
+        XCTAssertEqual(copied?.sourceAppName, "Fixture Editor")
+        XCTAssertGreaterThan(copied?.lastUsedAt ?? .distantPast, createdAt)
+        let rows = try await reopened.history()
+        XCTAssertEqual(rows.count, 1)
+        await reopened.close()
+        await controller.shutdown()
+    }
+
+    func testMissingFailedAndCancelledCopyLeavePrivatePasteboardUntouched() async throws {
+        let fixture = try ControllerDatabaseFixture()
+        defer { fixture.remove() }
+
+        let repository = ClipboardHistoryRepository(databaseURL: fixture.databaseURL)
+        try await repository.open()
+        let stored = try await repository.record(makeItem(text: "synthetic valid cancelled copy"))
+
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("synthetic existing private board", forType: .string)
+        let controller = ClipboardHistoryController(
+            pasteboard: NSPasteboardBoundary(pasteboard: pasteboard),
+            repository: repository
+        )
+        await controller.start()
+
+        let missingCopy = await controller.copyItem(id: UUID())
+        XCTAssertFalse(missingCopy)
+        XCTAssertEqual(pasteboard.string(forType: .string), "synthetic existing private board")
+
+        let changeCountBeforeCancellation = pasteboard.changeCount
+        let cancelledCopy = Task { @MainActor in
+            await controller.copyItem(id: stored.id)
+        }
+        cancelledCopy.cancel()
+        let cancelledResult = await cancelledCopy.value
+        XCTAssertFalse(cancelledResult)
+        XCTAssertEqual(pasteboard.string(forType: .string), "synthetic existing private board")
+        XCTAssertEqual(pasteboard.changeCount, changeCountBeforeCancellation)
+
+        await repository.close()
+        let failedCopy = await controller.copyItem(id: stored.id)
+        XCTAssertFalse(failedCopy)
+        XCTAssertEqual(pasteboard.string(forType: .string), "synthetic existing private board")
+        XCTAssertEqual(pasteboard.changeCount, changeCountBeforeCancellation)
+        await controller.shutdown()
+    }
+
+    func testSuccessfulCopyQueuesRecencyUpdateForShutdown() async throws {
+        let fixture = try ControllerDatabaseFixture()
+        defer { fixture.remove() }
+
+        let repository = ClipboardHistoryRepository(databaseURL: fixture.databaseURL)
+        try await repository.open()
+        let createdAt = Date().addingTimeInterval(-60)
+        let stored = try await repository.record(makeItem(text: "synthetic shutdown copy", createdAt: createdAt), now: createdAt)
+        await repository.close()
+
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let controller = ClipboardHistoryController(
+            pasteboard: NSPasteboardBoundary(pasteboard: pasteboard),
+            databaseURL: fixture.databaseURL
+        )
+        await controller.start()
+        let copiedSuccessfully = await controller.copyItem(id: stored.id)
+        XCTAssertTrue(copiedSuccessfully)
+        await controller.shutdown()
+
+        let reopened = ClipboardHistoryRepository(databaseURL: fixture.databaseURL)
+        try await reopened.open()
+        let copied = try await reopened.item(id: stored.id)
+        XCTAssertGreaterThan(copied?.lastUsedAt ?? .distantPast, createdAt)
+        await reopened.close()
+    }
     func testControllerPersistsCaptureThroughShutdownAndReopen() async throws {
         let fixture = try ControllerDatabaseFixture()
         defer { fixture.remove() }
@@ -68,9 +178,13 @@ final class ClipboardHistoryControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.query, "synthetic fresh")
         XCTAssertEqual(controller.items.map(\.searchableText), ["synthetic fresh row"])
+        XCTAssertEqual(controller.results.query, "synthetic fresh")
+        XCTAssertEqual(controller.results.filter, .all)
         controller.filter = .text
         await controller.flush()
         XCTAssertEqual(controller.items.map(\.searchableText), ["synthetic fresh row"])
+        XCTAssertEqual(controller.results.query, "synthetic fresh")
+        XCTAssertEqual(controller.results.filter, .text)
         await controller.shutdown()
     }
 
@@ -160,10 +274,10 @@ final class ClipboardHistoryControllerTests: XCTestCase {
         )
     }
 
-    private func makeItem(text: String) -> ClipboardItem {
+    private func makeItem(text: String, createdAt: Date = Date()) -> ClipboardItem {
         ClipboardItem(
             capture: makeCapture(text: text),
-            createdAt: Date()
+            createdAt: createdAt
         )
     }
 }

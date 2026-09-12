@@ -69,19 +69,38 @@ The commit and remote history are the authoritative publication receipt.
 
 ## Gate C — Keyboard workflow
 
-- [ ] Register global `⌘⇧V`, open/close a floating native panel and remember the previous app.
-- [ ] Place a 760 × 520 pt panel slightly above center on the active display; focus search and newest result.
-- [ ] Implement arrow selection, Return, `⌘Return`, preview, pin/delete bindings, clear search,
-  visible-item shortcuts 1–9 and Escape according to `DESIGN.md`.
-- [ ] Implement centralized copy-only restoration and reliable close/focus behavior.
-- [ ] Test selection/state transitions and verify native shortcut/panel/copy/focus with synthetic content.
-- [ ] Independently review, fix, build/test, commit and push accepted Gate C.
+Implementation choices for this gate:
+
+- Native system helpers own global shortcut registration, the floating `NSPanel`, display placement and focus restoration.
+  Prefer permission-independent hotkey registration; Accessibility and synthetic paste remain Gate D.
+- SwiftUI owns readable search/results/preview content. A small value type owns selection transitions across result changes.
+- Copy hydrates one persisted item, restores through the existing monitor, and updates recency without creating a new entry.
+  Cancelled or closed UI actions must not write after an asynchronous lookup returns.
+- `Return` and numbered actions use copy-only behavior in this gate and say Copy in the UI. Gate D supplies automatic paste.
+  Pin/delete actions follow in Gate E. These are staged delivery boundaries, not changes to the final keyboard specification.
+- Search text entry (including spaces/caret movement) must work normally. Preview keys apply when result selection has focus.
+- Native validation uses a private pasteboard, isolated database and a synthetic companion window for focus checks.
+
+- [x] Register global `⌘⇧V`, open/close a floating native panel and remember the previous app.
+- [x] Place a 760 × 520 pt panel slightly above center on the active display; focus search and newest result.
+- [x] Implement arrow selection, Return/`⌘Return` copy, preview, clear search,
+  numbered copy shortcuts 1–9 and Escape; complete paste bindings in D and pin/delete bindings in E.
+- [x] Implement centralized copy-only restoration and reliable close/focus behavior.
+- [x] Test selection/state transitions and verify native shortcut/panel/copy/focus with synthetic content.
+- [x] Independently review, fix, build/test, commit and push accepted Gate C.
+
+Acceptance: independent review, all 59 warning-as-error tests, a clean signed build, and strict
+signature verification pass. Native search/copy/preview/navigation, single-display placement, and
+Escape/copy return-to-editor checks pass with synthetic content. The user confirmed normal-build
+physical shortcut opening/search and closing. See `STATUS.md` for the precise native evidence and limits.
+Publication: commit `feat: complete keyboard clipboard workflow` and push `main`.
 
 ## Gate D — Automatic paste
 
 - [ ] Detect Accessibility trust and request it only through relevant user intent.
 - [ ] Restore clipboard, close panel, reactivate the remembered app, confirm focus, then issue paste.
 - [ ] Avoid synthetic paste without permission; leave copied content available on every failure.
+- [ ] Connect Return and numbered actions to paste, retaining `⌘Return` as copy-only per `DESIGN.md`.
 - [ ] Cover stale/missing app, activation failure, focus timeout and permission changes with tests.
 - [ ] Verify native paste and copy-only fallback where permission/environment permits.
 - [ ] Independently review, fix, build/test, commit and push accepted Gate D.
@@ -90,7 +109,7 @@ The commit and remote history are the authoritative publication receipt.
 
 - [ ] Menu-bar Open/Pause/Clear/Settings/Quit and native ServiceManagement launch at login.
 - [ ] Simple General/Privacy/Permissions settings; retention and menu-bar visibility controls.
-- [ ] Pins, item deletion, confirmed clear-unpinned/clear-all, pause/resume and source-app presentation.
+- [ ] Pins, item deletion, `⌘P`/`⌘Delete` bindings, confirmed clear-unpinned/clear-all, pause/resume and source-app presentation.
 - [ ] Images, file/folder URLs and practical rich-text representation preservation.
 - [ ] Local blob storage without eager row loading; deletion/retention remove unreferenced files.
 - [ ] Bundle-ID exclusions and sensitive/transient handling before persistence.

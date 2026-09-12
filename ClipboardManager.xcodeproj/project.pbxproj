@@ -8,11 +8,15 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* ClipboardCore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* ClipboardCore */; };
+		A10000000000000000000014 /* ClipboardPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* ClipboardPanelView.swift */; };
+		A10000000000000000000016 /* ClipboardPanelHostingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* ClipboardPanelHostingView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A10000000000000000000003 /* ClipboardManager.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClipboardManager.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000004 /* ClipboardManagerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardManagerApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000015 /* ClipboardPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardPanelView.swift; sourceTree = "<group>"; };
+		A10000000000000000000017 /* ClipboardPanelHostingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardPanelHostingView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -39,6 +43,8 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000004 /* ClipboardManagerApp.swift */,
+				A10000000000000000000015 /* ClipboardPanelView.swift */,
+				A10000000000000000000017 /* ClipboardPanelHostingView.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -119,6 +125,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000000000000F /* ClipboardManagerApp.swift in Sources */,
+				A10000000000000000000014 /* ClipboardPanelView.swift in Sources */,
+				A10000000000000000000016 /* ClipboardPanelHostingView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

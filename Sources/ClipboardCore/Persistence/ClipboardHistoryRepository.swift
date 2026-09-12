@@ -249,6 +249,27 @@ public actor ClipboardHistoryRepository {
         }
     }
 
+    /// Records a successful clipboard restore without replacing the saved payload
+    /// or capture metadata. A newer timestamp already stored for the item wins.
+    @discardableResult
+    public func markUsed(id: UUID, at date: Date = Date()) throws -> Bool {
+        try transaction {
+            let database = try requiredDatabase()
+            try withStatement(
+                database,
+                "UPDATE clipboard_items SET last_used_at = MAX(last_used_at, ?) WHERE id = ?"
+            ) { statement in
+                try bind([.double(date.timeIntervalSinceReferenceDate), .text(id.uuidString)], to: statement)
+                try stepDone(statement, database: database)
+            }
+            guard sqlite3_changes(database) > 0 else {
+                return false
+            }
+            try enforceRetentionInTransaction(now: date)
+            return true
+        }
+    }
+
     @discardableResult
     public func setPinned(_ pinned: Bool, for id: UUID, now: Date = Date()) throws -> ClipboardItem? {
         try transaction {

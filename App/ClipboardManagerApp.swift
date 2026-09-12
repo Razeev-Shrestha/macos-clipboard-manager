@@ -7,16 +7,19 @@ struct ClipboardManagerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup("Clipboard Manager") {
-            ClipboardHistoryView(controller: appDelegate.controller)
+        Settings {
+            EmptyView()
         }
-        .defaultSize(width: 640, height: 460)
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let controller: ClipboardHistoryController
+
+    private let panelModel: ClipboardPanelViewModel
+    private var panel: ClipboardPanelController?
+    private var shortcut: GlobalClipboardShortcut?
     private var isTerminating = false
 
     override init() {
@@ -25,13 +28,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pasteboard: configuration.pasteboard,
             databaseURL: configuration.databaseURL
         )
+        panelModel = ClipboardPanelViewModel(controller: controller)
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installPanelIfNeeded()
+        installShortcut()
+
         Task { [weak controller] in
             await controller?.start()
         }
+
+        // Gate C intentionally opens once at launch: there is no menu-bar entry yet.
+        panel?.show()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        panel?.show()
+        return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -40,11 +55,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         isTerminating = true
+        shortcut?.unregister()
         Task { [weak self] in
             await self?.controller.shutdown()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    private func installPanelIfNeeded() {
+        guard panel == nil else {
+            return
+        }
+
+        let hostingView = ClipboardPanelHostingView(rootView: ClipboardPanelView(model: panelModel))
+        hostingView.onDidBecomeKey = { [weak self] in
+            self?.panelModel.requestSearchFocus()
+        }
+        let panel = ClipboardPanelController(contentView: hostingView)
+        panel.onWillShow = { [weak self] in
+            guard let self else {
+                return
+            }
+            self.panelModel.prepareForOpening(itemIDs: self.controller.items.map(\.id))
+        }
+        panel.onDidClose = { [weak self] in
+            self?.panelModel.didClose()
+        }
+        panel.onKeyDown = { [weak self] event in
+            guard let self else {
+                return false
+            }
+            return self.panelModel.handleKeyDown(event)
+        }
+
+        panelModel.onPreviewVisibilityChanged = { [weak panel] isExpanded in
+            panel?.setPreviewExpanded(isExpanded)
+        }
+        panelModel.onRequestClose = { [weak panel] in
+            panel?.close(restoringFocus: true)
+        }
+        self.panel = panel
+    }
+
+    private func installShortcut() {
+        let shortcut = GlobalClipboardShortcut()
+        shortcut.onPressed = { [weak self] in
+            self?.panel?.toggle()
+        }
+
+        do {
+            try shortcut.register()
+            panelModel.shortcutStatus = nil
+            self.shortcut = shortcut
+        } catch {
+            panelModel.shortcutStatus = "⌘⇧V is unavailable because another app is using it. Open Clipboard Manager from the Dock to use its panel."
+        }
     }
 
     private struct Configuration {
@@ -170,115 +236,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return arguments[valueIndex]
     }
     #endif
-}
-
-private struct ClipboardHistoryView: View {
-    @ObservedObject var controller: ClipboardHistoryController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            TextField("Search clipboard…", text: $controller.query)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Search clipboard history")
-
-            Picker("History filter", selection: $controller.filter) {
-                ForEach(ClipboardHistoryFilter.allCases, id: \.self) { filter in
-                    Text(filter.label).tag(filter)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            historyContent
-
-            if controller.accessState == .denied {
-                Text("Clipboard access is denied. Enable Clipboard access in System Settings, then relaunch Clipboard Manager.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Clipboard access is denied. Enable Clipboard access in System Settings, then relaunch Clipboard Manager.")
-            }
-        }
-        .padding()
-    }
-
-    @ViewBuilder
-    private var historyContent: some View {
-        switch controller.storageState {
-        case .inactive, .opening:
-            ContentUnavailableView(
-                "Opening Clipboard History",
-                systemImage: "externaldrive",
-                description: Text("Preparing local clipboard storage.")
-            )
-        case .failed:
-            ContentUnavailableView(
-                "Clipboard History Unavailable",
-                systemImage: "exclamationmark.triangle",
-                description: Text("Clipboard history is unavailable. Recording is paused. Check storage and relaunch to try again.")
-            )
-        case .ready where controller.items.isEmpty:
-            ContentUnavailableView(
-                emptyStateTitle,
-                systemImage: "doc.on.clipboard",
-                description: Text(emptyStateMessage)
-            )
-        case .ready:
-            ScrollViewReader { proxy in
-                List(controller.items) { item in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.searchableText ?? item.primaryType.rawValue.capitalized)
-                            .lineLimit(2)
-                        Text(item.sourceAppName ?? item.primaryType.rawValue.capitalized)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .id(item.id)
-                }
-                .onChange(of: historyResultIdentity) { _, _ in
-                    guard let firstItemID = controller.items.first?.id else {
-                        return
-                    }
-                    proxy.scrollTo(firstItemID, anchor: .top)
-                }
-            }
-        }
-    }
-
-    private var historyResultIdentity: [String] {
-        [controller.query, controller.filter.rawValue] + controller.items.map { $0.id.uuidString }
-    }
-
-    private var hasActiveSearchOrFilter: Bool {
-        !controller.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || controller.filter != .all
-    }
-
-    private var emptyStateTitle: String {
-        hasActiveSearchOrFilter ? "No Matching Clipboard Items" : "No Clipboard Items Yet"
-    }
-
-    private var emptyStateMessage: String {
-        switch controller.accessState {
-        case .denied:
-            "Clipboard access is denied. Enable Clipboard access in System Settings, then relaunch Clipboard Manager."
-        case .unknown, .allowed:
-            hasActiveSearchOrFilter
-                ? "Adjust your search or select another filter."
-                : "Copy text or a URL in another app to add it here."
-        }
-    }
-}
-
-private extension ClipboardHistoryFilter {
-    var label: String {
-        switch self {
-        case .all: "All"
-        case .text: "Text"
-        case .code: "Code"
-        case .links: "Links"
-        case .images: "Images"
-        case .files: "Files"
-        case .pinned: "Pinned"
-        }
-    }
 }

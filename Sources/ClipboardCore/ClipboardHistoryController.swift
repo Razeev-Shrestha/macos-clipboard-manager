@@ -10,11 +10,29 @@ public enum ClipboardHistoryStorageState: Equatable, Sendable {
     case failed
 }
 
+/// One accepted history query result. The query and filter are captured with its
+/// metadata rows so UI consumers never infer provenance from mutable controls.
+public struct ClipboardHistoryResults: Equatable, Sendable {
+    public let items: [ClipboardItem]
+    public let query: String
+    public let filter: ClipboardHistoryFilter
+
+    public init(items: [ClipboardItem], query: String, filter: ClipboardHistoryFilter) {
+        self.items = items
+        self.query = query
+        self.filter = filter
+    }
+}
+
 /// Connects the main-actor pasteboard monitor to persistent history without making
 /// SwiftUI render from the monitor's transient in-memory cache.
 @MainActor
 public final class ClipboardHistoryController: ObservableObject {
-    @Published public private(set) var items: [ClipboardItem] = []
+    @Published public private(set) var results = ClipboardHistoryResults(
+        items: [],
+        query: "",
+        filter: .all
+    )
     @Published public private(set) var accessState: PasteboardAccessState = .unknown
     @Published public private(set) var storageState: ClipboardHistoryStorageState = .inactive
     @Published public var query = "" {
@@ -26,6 +44,11 @@ public final class ClipboardHistoryController: ObservableObject {
         didSet {
             scheduleReload()
         }
+    }
+
+    /// Metadata-only history rows from the last accepted query result.
+    public var items: [ClipboardItem] {
+        results.items
     }
 
     private let monitor: NSPasteboardMonitor
@@ -118,6 +141,36 @@ public final class ClipboardHistoryController: ObservableObject {
         monitor.pollNow()
     }
 
+    /// Restores one persisted item without attempting focus restoration or a
+    /// synthetic paste. The monitor owns the write so its self-write suppression
+    /// remains in effect for the next poll.
+    @discardableResult
+    public func copyItem(id: UUID) async -> Bool {
+        guard hasOpenedRepository, storageState == .ready, !isShuttingDown, !hasStorageFailure, !Task.isCancelled else {
+            return false
+        }
+
+        let item: ClipboardItem?
+        do {
+            item = try await repository.item(id: id)
+        } catch {
+            guard !isShuttingDown, !Task.isCancelled else {
+                return false
+            }
+            recordStorageFailure()
+            return false
+        }
+
+        guard !isShuttingDown, !hasStorageFailure, !Task.isCancelled,
+              let item, item.payload != nil,
+              monitor.restore(item) else {
+            return false
+        }
+
+        enqueueUsageUpdate(for: id, at: Date())
+        return true
+    }
+
     /// Waits for accepted captures and then refreshes the currently selected query.
     /// This is useful for deterministic tests and for future explicit refresh UI.
     public func flush() async {
@@ -170,14 +223,28 @@ public final class ClipboardHistoryController: ObservableObject {
                 guard !Task.isCancelled else {
                     return
                 }
-                self?.didPersistCapture()
+                self?.didPersistWrite()
             } catch {
                 self?.didFailStorageOperation()
             }
         }
     }
 
-    private func didPersistCapture() {
+    private func enqueueUsageUpdate(for id: UUID, at date: Date) {
+        let previousWrite = writeTask
+        let repository = repository
+        writeTask = Task { [weak self] in
+            await previousWrite?.value
+            do {
+                _ = try await repository.markUsed(id: id, at: date)
+                self?.didPersistWrite()
+            } catch {
+                self?.didFailStorageOperation()
+            }
+        }
+    }
+
+    private func didPersistWrite() {
         guard !isShuttingDown else {
             return
         }
@@ -209,7 +276,7 @@ public final class ClipboardHistoryController: ObservableObject {
                 guard !Task.isCancelled else {
                     return
                 }
-                self?.apply(rows, for: generation)
+                self?.apply(rows, query: query, filter: filter, for: generation)
             } catch {
                 guard !Task.isCancelled else {
                     return
@@ -230,17 +297,22 @@ public final class ClipboardHistoryController: ObservableObject {
         let filter = filter
         do {
             let rows = try await repository.history(query: query, filter: filter, limit: nil)
-            apply(rows, for: generation)
+            apply(rows, query: query, filter: filter, for: generation)
         } catch {
             didFailQuery(for: generation)
         }
     }
 
-    private func apply(_ rows: [ClipboardItem], for generation: Int) {
+    private func apply(
+        _ rows: [ClipboardItem],
+        query: String,
+        filter: ClipboardHistoryFilter,
+        for generation: Int
+    ) {
         guard generation == queryGeneration, !isShuttingDown else {
             return
         }
-        items = rows
+        results = ClipboardHistoryResults(items: rows, query: query, filter: filter)
     }
 
     private func didFailQuery(for generation: Int) {
