@@ -1,15 +1,15 @@
 # Implementation status
 
-Full V1 goal: **in progress**. Gates A–C have passed their quality gates.
-Automatic paste, full V1 functionality, and distribution remain Gates D–F.
+Full V1 goal: **in progress**. Gates A–D have passed their quality gates.
+Full V1 functionality and distribution remain Gates E–F.
 
 | Gate | Status | Evidence / remaining work |
 | --- | --- | --- |
 | A — Clipboard core | Accepted | 20 tests, clean signed native build, private-board UI smoke and final independent review passed. Git milestone: `feat: complete clipboard core`. |
 | B — Persistence/search | Accepted | 38 tests, clean signed native build, independent review, private-board search/filter/restart checks passed. Git milestone: `feat: add persistent clipboard history and search`. |
 | C — Keyboard workflow | Accepted | Independent review, 59 tests and clean signed build pass. User confirmed normal-build search results and global shortcut close. Native copy/navigation/preview and earlier editor-return checks pass. |
-| D — Automatic paste | Not started | Requires accepted Gate C. |
-| E — Full V1 | Not started | Requires accepted Gate D. |
+| D — Automatic paste | Accepted | Independent review, 84 tests, clean signed build and strict signature check pass. Native trusted insertion, explicit copy-only and denied-destination fallback pass with synthetic content. |
+| E — Full V1 | Not started | Gate D accepted; menu/settings, rich payloads, privacy and reliability are next. |
 | F — Polish/distribution | Not started | Requires accepted Gate E and full final audit. |
 
 ## Environment
@@ -127,8 +127,52 @@ is lexical; validation used a newly created directory, not a symlink. External b
 - Gate C is accepted on the scoped evidence above. Physical shortcut and search behavior are established by
   the user; native copy/navigation/preview and editor-return evidence comes from the recorded independent
   system checks. Multi-display behavior, automatic paste and final accessibility coverage remain their later gates.
-- Publication: `feat: complete keyboard clipboard workflow` on `main`; Git history and the verified remote
-  commit are the authoritative receipt. The full A–F objective remains incomplete.
+- Published `feat: complete keyboard clipboard workflow` as `2e8e246442208aeee1abaeb87a6c29bdb92c69fb`
+  on `main`; the remote hash was read back and matched. The worktree was clean before D began.
+  The test app and probe were normally quit; SQLite still reports integrity `ok` and twelve content/FTS rows.
+  The full A–F objective remains incomplete.
+
+## Gate D acceptance — 2026-09-12
+
+- Added a centralized copy/close/focus/paste coordinator. It snapshots the destination before hydration,
+  validates the exact restore receipt, checks current Accessibility and event-post access, and posts
+  Command-V only to the same live foreground application. Delivery is bounded and cancellable.
+- Return, numbered actions and double-click request paste; CmdReturn and preview Copy remain explicit
+  copy-only actions. Copy-only never requests Accessibility. Fallback guidance survives reopening, and
+  a completed or cancelled action releases the UI for the next action.
+- Main's full warning-as-error suite passes all **84 tests**. Coverage includes permission changes,
+  target termination/switching, bounded focus waits, expected-close versus dismissal, stale completion,
+  clipboard replacement and receipt ownership. Tests replace event posting and never target user apps.
+- Native fallback used a named synthetic board and isolated database with two fixtures. Return with no
+  permitted synthetic destination restored the exact selected fixture and closed the panel. Reopening
+  preserved fallback guidance; search and a subsequent CmdReturn worked. No duplicate history appeared:
+  normal quit exited successfully, SQLite integrity is `ok`, and both content and FTS contain two rows.
+- Independent review has no remaining blockers. Review fixes use semantic `NSRunningApplication.isEqual`
+  identity and recheck the exact clipboard receipt after permission preflight, immediately before posting.
+  A regression test replaces the clipboard during preflight and verifies that no paste is posted.
+- The final clean signed Debug build and strict signature verification pass. Source hashes confirm that the
+  tested production files did not change during the build. The only Xcode warning is the expected skipped
+  AppIntents metadata extraction because this app has no AppIntents dependency.
+- The user explicitly authorized ClipboardManager's Accessibility permission and continuing the remaining
+  goal unattended. The exact reviewed build was added through System Settings; its switch read back On.
+  Reopening the panel refreshed permission availability and removed the Enable Accessibility guidance.
+- The dedicated native paste probe reads only the named synthetic board. Debug synthesis requires its
+  explicit bundle ID and exact app path. A cooperative editor-to-panel interaction followed by Return
+  inserted exactly `Synthetic Gate D first paste item` into the editor. Its standard paste handler recorded
+  one insertion from the named board at change count 5. This verifies real native posting and insertion,
+  beyond the coordinator's deliberately limited paste-requested outcome.
+- CmdReturn with permission enabled restored the second fixture and closed the panel while the editor
+  retained the first fixture and its paste count stayed at one. This establishes explicit copy-only behavior
+  even when synthesis is permitted. No production clipboard payload was read or used as a fixture.
+- Targeted automation's focus context can differ from the desktop foreground process between calls.
+  A later numbered action captured a destination outside the synthetic allowlist and correctly fell back
+  to copying; it is not counted as a second successful native insertion. Numbered paste routing is covered
+  by model tests. No product focus change was made solely to accommodate this automation behavior.
+- Both test applications quit normally with exit status zero. SQLite integrity remains `ok`, with two
+  content rows and two FTS rows after copying and pasting. The final production source matches the
+  clean signed build. Gate D is accepted on the scoped evidence above; E and F remain incomplete.
+- Publication uses `feat: add automatic paste and focus restoration` on `main`; Git history and the
+  checked remote commit are the publication receipt. Generated fixtures and build artifacts stay ignored.
 
 ## Outstanding evidence
 
@@ -136,6 +180,5 @@ Gate A checks used isolated named pasteboards. The real General Clipboard consen
 interaction was not changed or manually exercised; access policy transitions were tested through the
 actual boundary with injected policy values. No production clipboard payload was used for verification.
 
-Auto-paste/Accessibility, full menu/settings,
-rich content, exclusions, multiple displays/sleep-wake, final appearance/performance and distribution
+Full menu/settings, rich content, exclusions, multiple displays/sleep-wake, final appearance/performance and distribution
 remain tracked in `IMPLEMENTATION_PLAN.md` and `REQUIREMENTS_CHECKLIST.md`.

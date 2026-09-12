@@ -439,6 +439,38 @@ final class ClipboardCoreTests: XCTestCase {
         monitor.stop()
     }
 
+    func testRestoreReceiptRejectsAReplacementWithoutReadingPayload() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let boundary = NSPasteboardBoundary(pasteboard: pasteboard)
+        let monitor = NSPasteboardMonitor(pasteboard: boundary)
+        monitor.start()
+        _ = monitor.pollNow()
+
+        let payload = ClipboardPayload(
+            primaryTypeIdentifier: NSPasteboard.PasteboardType.string.rawValue,
+            representations: [
+                ClipboardRepresentation(
+                    typeIdentifier: NSPasteboard.PasteboardType.string.rawValue,
+                    data: Data("synthetic receipt fixture".utf8)
+                )
+            ],
+            plainText: "synthetic receipt fixture"
+        )
+
+        guard let receipt = monitor.restoreReceipt(payload) else {
+            XCTFail("expected a verified restore receipt")
+            return
+        }
+        XCTAssertEqual(receipt.changeCount, pasteboard.changeCount)
+        XCTAssertTrue(monitor.isCurrent(receipt))
+
+        _ = pasteboard.prepareForNewContents(with: [.currentHostOnly])
+        XCTAssertTrue(pasteboard.setString("synthetic external replacement", forType: .string))
+        XCTAssertFalse(monitor.isCurrent(receipt))
+        monitor.stop()
+    }
+
     func testNamedPrivatePasteboardURLAndMalformedURLAreSafe() {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }

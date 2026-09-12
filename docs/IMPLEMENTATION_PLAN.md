@@ -97,13 +97,33 @@ Publication: commit `feat: complete keyboard clipboard workflow` and push `main`
 
 ## Gate D — Automatic paste
 
-- [ ] Detect Accessibility trust and request it only through relevant user intent.
-- [ ] Restore clipboard, close panel, reactivate the remembered app, confirm focus, then issue paste.
-- [ ] Avoid synthetic paste without permission; leave copied content available on every failure.
-- [ ] Connect Return and numbered actions to paste, retaining `⌘Return` as copy-only per `DESIGN.md`.
-- [ ] Cover stale/missing app, activation failure, focus timeout and permission changes with tests.
-- [ ] Verify native paste and copy-only fallback where permission/environment permits.
-- [ ] Independently review, fix, build/test, commit and push accepted Gate D.
+Implementation choices for this gate:
+
+- Keep the copy → close → activate → focus check → paste flow in a small native coordinator.
+  Snapshot the destination before asynchronous payload loading and preserve existing cancellation guards.
+- Distinguish the intended close after a successful copy from user dismissal so the paste cannot cancel itself.
+  Reopening, shutdown, a superseding action or a deliberate switch to another app cancels pending delivery.
+- Check current Accessibility trust and event-post access before synthesis. Request trust only from relevant
+  user intent; copy-only never prompts. Use a short bounded focus wait and revalidate immediately before posting.
+- Post Command-V to the validated destination PID. The API has no delivery acknowledgement: call the outcome
+  paste requested, retain the copied content for manual fallback, and verify insertion separately in native QA.
+- A dedicated native test editor handles standard paste using only an isolated named board. Unit tests inject
+  permission/activation/posting boundaries and deterministic suspension points; they never post to user apps.
+
+- [x] Detect Accessibility trust and request it only through relevant user intent.
+- [x] Restore clipboard, close panel, reactivate the remembered app, confirm focus, then issue paste.
+- [x] Avoid synthetic paste without permission; leave copied content available on every failure.
+- [x] Connect Return and numbered actions to paste, retaining `⌘Return` as copy-only per `DESIGN.md`.
+- [x] Cover stale/missing app, activation failure, focus timeout and permission changes with tests.
+- [x] Verify native paste and copy-only fallback where permission/environment permits.
+- [x] Independently review, fix, build/test, commit and push accepted Gate D.
+
+Independent review has no remaining blockers after semantic application-identity and final clipboard-receipt
+fixes. All 84 warning-as-error tests, the clean signed Debug build and strict signature verification pass.
+Native Return inserted the exact synthetic fixture into the dedicated editor after the user-authorized
+Accessibility grant. CmdReturn copied another fixture without insertion; denied-destination fallback and
+duplicate suppression passed. See STATUS.md for the targeted-automation activation limits.
+Publication: commit `feat: add automatic paste and focus restoration` and push `main`.
 
 ## Gate E — Full V1 functionality
 

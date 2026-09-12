@@ -8,6 +8,17 @@ public enum ClipboardMonitorPollResult: Equatable, Sendable {
     case skipped(PasteboardSkipReason)
 }
 
+/// The exact pasteboard change count verified by an internal restore.  The
+/// coordinator uses this receipt to reject a paste when another process has
+/// replaced the clipboard while focus was being restored.
+public struct ClipboardRestoreReceipt: Equatable, Sendable {
+    public let changeCount: Int
+
+    public init(changeCount: Int) {
+        self.changeCount = changeCount
+    }
+}
+
 /// Main-actor change-count polling and capture coordinator.  Only a changed count
 /// causes a pasteboard read; the timer itself does no payload work on unchanged ticks.
 @MainActor
@@ -141,26 +152,47 @@ public final class NSPasteboardMonitor: NSObject {
     /// change count.  A write that races another process is not suppressed.
     @discardableResult
     public func restore(_ item: ClipboardItem) -> Bool {
+        restoreReceipt(item) != nil
+    }
+
+    /// Restores a saved item and returns the exact verified internal-write count.
+    /// The receipt contains no payload and is safe to retain across an async focus
+    /// handoff.
+    @discardableResult
+    public func restoreReceipt(_ item: ClipboardItem) -> ClipboardRestoreReceipt? {
         guard let payload = item.payload else {
-            return false
+            return nil
         }
-        return restore(payload)
+        return restoreReceipt(payload)
     }
 
     @discardableResult
     public func restore(_ payload: ClipboardPayload) -> Bool {
+        restoreReceipt(payload) != nil
+    }
+
+    /// Restores a payload and returns the exact verified internal-write count.
+    @discardableResult
+    public func restoreReceipt(_ payload: ClipboardPayload) -> ClipboardRestoreReceipt? {
         switch pasteboard.write(payload: payload) {
         case .written(let changeCount):
             guard pasteboard.changeCount == changeCount else {
-                return false
+                return nil
             }
             insertSuppressedChangeCount(changeCount)
             observedChangeCount = changeCount
             unstableChangeCount = nil
-            return true
+            return ClipboardRestoreReceipt(changeCount: changeCount)
         case .failed, .changedDuringWrite:
-            return false
+            return nil
         }
+    }
+
+    /// Checks only the verified write count.  It deliberately does not read any
+    /// pasteboard representation, so a replacement cannot be mistaken for the
+    /// item that was restored earlier.
+    public func isCurrent(_ receipt: ClipboardRestoreReceipt) -> Bool {
+        pasteboard.changeCount == receipt.changeCount
     }
 
     /// Clear the read baseline after the user changes pasteboard access in System

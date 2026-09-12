@@ -80,3 +80,36 @@ Sources: installed Xcode SDK `Carbon.framework/Frameworks/HIToolbox.framework/He
 [SwiftUI focus state](https://developer.apple.com/documentation/swiftui/focusstate),
 [cooperative application activation](https://developer.apple.com/documentation/appkit/passing-control-from-one-app-to-another-with-cooperative-activation),
 [application activation](https://developer.apple.com/documentation/appkit/nsrunningapplication/activate(options:)).
+
+## Automatic paste — Gate D
+
+The native coordinator captures the previous application instance and PID before asynchronous payload loading.
+The instance matters because a PID can be reused. Closing the panel clears its remembered target, so the paste
+operation retains its own snapshot and revalidates that the same live application is active and frontmost.
+Cooperative activation is still best-effort; delivery uses a short bounded, cancellation-aware focus wait.
+Compare `NSRunningApplication` objects with `isEqual`, as the SDK requires, rather than Swift wrapper
+reference identity or PID alone. If an unrelated app becomes frontmost during the wait, cancel delivery;
+do not wait for the original destination to return after a deliberate app switch.
+
+`AXIsProcessTrustedWithOptions` reports current trust. Its optional prompt is asynchronous and does not change
+that immediate result. Opening the panel and explicit copy-only actions never request trust. Paste intent or an
+explicit Enable action may request it; missing permission falls back to copying. The installed SDK separately
+exposes `CGPreflightPostEventAccess` for event-synthesis access, which is checked without an extra prompt.
+
+The intended event is ordinary Command-V, posted to the validated destination PID after final target, permission
+and clipboard-version checks. `CGEventPostToPid` returns `void`: posting cannot confirm that the destination
+inserted content. Report a paste request honestly and verify insertion separately with a synthetic native editor.
+Keep the copied contents on fallback, except that a subsequent external clipboard write must be respected rather
+than overwritten. Only the exact change count from the successful restore may establish ownership.
+
+For native QA, the editor's standard paste action reads only the named synthetic board. A Debug named-board
+run permits synthesis only to its explicitly configured synthetic editor bundle ID and exact app URL. Without
+that target configuration, the run remains copy-only. Tests replace posting, permission and focus boundaries;
+they never issue synthetic input to user applications.
+
+Sources: installed macOS SDK `CoreGraphics/CGEvent.h` and `HIServices/AXUIElement.h`,
+[Accessibility trust](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions),
+[event-post access](https://developer.apple.com/documentation/coregraphics/cgpreflightposteventaccess()),
+[frontmost application](https://developer.apple.com/documentation/appkit/nsworkspace/frontmostapplication),
+[process identity](https://developer.apple.com/documentation/appkit/nsrunningapplication/processidentifier),
+[PID-targeted event posting](https://developer.apple.com/documentation/coregraphics/cgevent/posttopid(_:)).

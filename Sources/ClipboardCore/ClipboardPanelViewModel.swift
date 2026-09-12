@@ -13,14 +13,17 @@ public final class ClipboardPanelViewModel: ObservableObject {
     @Published public private(set) var isCopying = false
     @Published public var shortcutStatus: String?
     @Published public private(set) var copyFailure: String?
+    @Published public private(set) var pasteStatus: String?
+    @Published public private(set) var canAutomaticallyPaste = false
     @Published public private(set) var visibleItemIDs: [UUID] = []
 
     public var onPreviewVisibilityChanged: ((Bool) -> Void)?
     public var onRequestClose: (() -> Void)?
+    public var onPasteRequested: ((UUID, ClipboardPasteIntent) -> Void)?
+    public var onRequestAccessibilityAccess: (() -> Void)?
 
     public let controller: ClipboardHistoryController
     private var selection = ClipboardSelectionState()
-    private var copyTask: Task<Void, Never>?
     private var displayedQuery = ""
     private var displayedFilter: ClipboardHistoryFilter = .all
 
@@ -37,9 +40,6 @@ public final class ClipboardPanelViewModel: ObservableObject {
     }
 
     public func didClose() {
-        copyTask?.cancel()
-        copyTask = nil
-        isCopying = false
         listOwnsKeyboardFocus = false
     }
 
@@ -88,6 +88,31 @@ public final class ClipboardPanelViewModel: ObservableObject {
         }
     }
 
+    public func updateAutomaticPasteAvailability(_ available: Bool) {
+        canAutomaticallyPaste = available
+    }
+
+    public func requestAccessibilityAccess() {
+        onRequestAccessibilityAccess?()
+    }
+
+    public func receivePasteOutcome(_ outcome: ClipboardPasteOutcome) {
+        isCopying = false
+        copyFailure = nil
+
+        switch outcome {
+        case .pasteRequested:
+            pasteStatus = nil
+        case let .copiedOnly(reason):
+            pasteStatus = copyOnlyMessage(for: reason)
+        case .copyFailed:
+            pasteStatus = nil
+            copyFailure = "Couldn’t copy this item. It may no longer be available."
+        case .cancelled:
+            pasteStatus = nil
+        }
+    }
+
     public func selectedItem(in items: [ClipboardItem]) -> ClipboardItem? {
         guard let selectedID else {
             return nil
@@ -126,7 +151,7 @@ public final class ClipboardPanelViewModel: ObservableObject {
             let id = visibleItemIDs[visibleNumber - 1]
             selection.select(id)
             synchronizeSelection()
-            copy(id: id)
+            beginAction(id: id, intent: .paste)
             return true
         }
 
@@ -146,7 +171,10 @@ public final class ClipboardPanelViewModel: ObservableObject {
             guard hasCurrentResults, let selectedID else {
                 return true
             }
-            copy(id: selectedID)
+            beginAction(
+                id: selectedID,
+                intent: modifiers.isEmpty ? .paste : .copyOnly
+            )
             return true
         }
 
@@ -172,32 +200,30 @@ public final class ClipboardPanelViewModel: ObservableObject {
         guard hasCurrentResults, let selectedID else {
             return
         }
-        copy(id: selectedID)
+        beginAction(id: selectedID, intent: .copyOnly)
     }
 
-    private func copy(id: UUID) {
+    public func pasteSelected() {
+        guard hasCurrentResults, let selectedID else {
+            return
+        }
+        beginAction(id: selectedID, intent: .paste)
+    }
+
+    private func beginAction(id: UUID, intent: ClipboardPasteIntent) {
         guard !isCopying else {
             return
         }
 
         copyFailure = nil
+        pasteStatus = nil
         isCopying = true
-        copyTask = Task { [weak self] in
-            guard let self else {
-                return
-            }
-            let didCopy = await controller.copyItem(id: id)
-            guard !Task.isCancelled else {
-                return
-            }
+        guard let onPasteRequested else {
             isCopying = false
-            copyTask = nil
-            if didCopy {
-                onRequestClose?()
-            } else {
-                copyFailure = "Couldn’t copy this item. It may no longer be available."
-            }
+            copyFailure = "Clipboard actions are unavailable. Relaunch Clipboard Manager and try again."
+            return
         }
+        onPasteRequested(id, intent)
     }
 
     private func synchronizeSelection() {
@@ -218,6 +244,27 @@ public final class ClipboardPanelViewModel: ObservableObject {
             return nil
         }
         return digit
+    }
+
+    private func copyOnlyMessage(for reason: ClipboardPasteCopyOnlyReason) -> String? {
+        switch reason {
+        case .explicitCopy:
+            nil
+        case .noTarget:
+            "Copied to the clipboard. Choose a destination app to paste manually."
+        case .targetNotPermitted:
+            "Copied to the clipboard. Automatic paste is unavailable for this destination."
+        case .permissionUnavailable:
+            "Copied to the clipboard. Enable Accessibility to use automatic paste."
+        case .targetChanged:
+            "Copied to the clipboard. The destination app changed before pasting."
+        case .focusTimeout:
+            "Copied to the clipboard. The destination did not become ready in time."
+        case .clipboardReplaced:
+            "Clipboard changed before pasting. Choose the item again."
+        case .nativePostUnavailable:
+            "Copied to the clipboard. Automatic paste is currently unavailable."
+        }
     }
 
     /// Visibility callbacks need not run when a result publication retains the

@@ -47,6 +47,9 @@ final class ClipboardHistoryControllerTests: XCTestCase {
         let copiedSuccessfully = await controller.copyItem(id: stored.id)
         XCTAssertTrue(copiedSuccessfully)
         XCTAssertEqual(pasteboard.string(forType: .string), "synthetic copy payload")
+        let receipt = await controller.copyItemWithReceipt(id: stored.id)
+        XCTAssertNotNil(receipt)
+        XCTAssertTrue(controller.isRestoreCurrent(receipt!))
         XCTAssertEqual(
             controller.pollNow(),
             .selfWriteSuppressed(changeCount: pasteboard.changeCount)

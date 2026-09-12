@@ -132,6 +132,161 @@ final class ClipboardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(model.selectedID, second)
     }
 
+    func testReturnRequestsPasteForTheCurrentSelection() {
+        let model = makeModel()
+        let itemID = UUID()
+        var requested: [(UUID, ClipboardPasteIntent)] = []
+        model.onPasteRequested = { itemID, intent in
+            requested.append((itemID, intent))
+        }
+        model.acceptPublishedResults(results([itemID]))
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 36)))
+        XCTAssertEqual(requested.count, 1)
+        XCTAssertEqual(requested.first?.0, itemID)
+        XCTAssertEqual(requested.first?.1, .paste)
+        XCTAssertTrue(model.isCopying)
+    }
+
+    func testCommandReturnRequestsCopyOnlyForTheCurrentSelection() {
+        let model = makeModel()
+        let itemID = UUID()
+        var requested: [(UUID, ClipboardPasteIntent)] = []
+        model.onPasteRequested = { itemID, intent in
+            requested.append((itemID, intent))
+        }
+        model.acceptPublishedResults(results([itemID]))
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(
+            keyCode: 36,
+            modifiers: .command,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r"
+        )))
+        XCTAssertEqual(requested.count, 1)
+        XCTAssertEqual(requested.first?.0, itemID)
+        XCTAssertEqual(requested.first?.1, .copyOnly)
+        XCTAssertTrue(model.isCopying)
+    }
+
+    func testVisibleCommandNumberRequestsPasteForThatVisibleItem() {
+        let model = makeModel()
+        let first = UUID()
+        let second = UUID()
+        var requested: [(UUID, ClipboardPasteIntent)] = []
+        model.onPasteRequested = { itemID, intent in
+            requested.append((itemID, intent))
+        }
+        model.acceptPublishedResults(results([first, second]))
+        model.updateVisibleItems([first, second])
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(
+            keyCode: 19,
+            modifiers: .command,
+            characters: "2",
+            charactersIgnoringModifiers: "2"
+        )))
+        XCTAssertEqual(requested.count, 1)
+        XCTAssertEqual(requested.first?.0, second)
+        XCTAssertEqual(requested.first?.1, .paste)
+        XCTAssertEqual(model.selectedID, second)
+    }
+
+    func testPreviewCopyRequestsCopyOnly() {
+        let model = makeModel()
+        let itemID = UUID()
+        var requested: [(UUID, ClipboardPasteIntent)] = []
+        model.onPasteRequested = { itemID, intent in
+            requested.append((itemID, intent))
+        }
+        model.acceptPublishedResults(results([itemID]))
+
+        model.copySelected()
+
+        XCTAssertEqual(requested.count, 1)
+        XCTAssertEqual(requested.first?.0, itemID)
+        XCTAssertEqual(requested.first?.1, .copyOnly)
+    }
+
+    func testStaleResultsDoNotRequestPaste() {
+        let controller = makeController()
+        let model = ClipboardPanelViewModel(controller: controller)
+        let itemID = UUID()
+        var requestCount = 0
+        model.onPasteRequested = { _, _ in
+            requestCount += 1
+        }
+        model.acceptPublishedResults(results([itemID]))
+        controller.query = "new query"
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 36)))
+        XCTAssertEqual(requestCount, 0)
+        XCTAssertFalse(model.isCopying)
+    }
+
+    func testCancelledOutcomeClearsBusyStateWithoutClaimingInsertion() {
+        let model = makeModel()
+        let itemID = UUID()
+        model.onPasteRequested = { _, _ in }
+        model.acceptPublishedResults(results([itemID]))
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 36)))
+        XCTAssertTrue(model.isCopying)
+
+        model.receivePasteOutcome(.cancelled)
+
+        XCTAssertFalse(model.isCopying)
+        XCTAssertNil(model.pasteStatus)
+    }
+
+    func testCancellationAfterCloseLetsTheReopenedPanelStartAnotherAction() {
+        let model = makeModel()
+        let itemID = UUID()
+        var requested: [(UUID, ClipboardPasteIntent)] = []
+        model.onPasteRequested = { itemID, intent in
+            requested.append((itemID, intent))
+        }
+        model.acceptPublishedResults(results([itemID]))
+
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 36)))
+        XCTAssertTrue(model.isCopying)
+
+        model.didClose()
+        XCTAssertTrue(model.isCopying)
+
+        model.receivePasteOutcome(.cancelled)
+        XCTAssertFalse(model.isCopying)
+
+        model.prepareForOpening(itemIDs: [itemID])
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 36)))
+        XCTAssertEqual(requested.map(\.0), [itemID, itemID])
+        XCTAssertEqual(requested.map(\.1), [.paste, .paste])
+    }
+
+    func testClipboardReplacedOutcomeTellsUserToChooseTheItemAgain() {
+        let model = makeModel()
+
+        model.receivePasteOutcome(.copiedOnly(.clipboardReplaced))
+
+        XCTAssertEqual(model.pasteStatus, "Clipboard changed before pasting. Choose the item again.")
+    }
+
+    func testFallbackGuidanceSurvivesReopeningUntilTheNextAction() {
+        let model = makeModel()
+        let itemID = UUID()
+        model.acceptPublishedResults(results([itemID]))
+        model.receivePasteOutcome(.copiedOnly(.clipboardReplaced))
+
+        model.prepareForOpening(itemIDs: [itemID])
+
+        XCTAssertEqual(model.pasteStatus, "Clipboard changed before pasting. Choose the item again.")
+
+        model.onPasteRequested = { _, _ in }
+        model.copySelected()
+
+        XCTAssertNil(model.pasteStatus)
+    }
+
     private func makeModel() -> ClipboardPanelViewModel {
         ClipboardPanelViewModel(controller: makeController())
     }

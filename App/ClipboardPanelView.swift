@@ -150,7 +150,7 @@ struct ClipboardPanelView: View {
                         }
                         .onTapGesture(count: 2) {
                             model.select(item.id)
-                            model.copySelected()
+                            model.pasteSelected()
                         }
                     }
                 }
@@ -183,6 +183,11 @@ struct ClipboardPanelView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityLabel(copyFailure)
+            } else if let pasteStatus = model.pasteStatus {
+                Label(pasteStatus, systemImage: "doc.on.clipboard")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(pasteStatus)
             } else if let shortcutStatus = model.shortcutStatus {
                 Label(shortcutStatus, systemImage: "exclamationmark.triangle")
                     .font(.caption)
@@ -194,10 +199,20 @@ struct ClipboardPanelView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if !model.canAutomaticallyPaste {
+                Button("Enable Accessibility") {
+                    model.requestAccessibilityAccess()
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+                .accessibilityHint("Requests Accessibility access for automatic paste.")
+            }
+
             HStack(spacing: 14) {
                 Text("↑↓ Navigate")
-                Text("↩ Copy")
-                Text("⌘1–9 Copy")
+                Text("↩ Paste")
+                Text("⌘↩ Copy")
+                Text("⌘1–9 Paste")
                 Text("Space Preview")
                 Text("⌘K Search")
                 Text("Esc Close")

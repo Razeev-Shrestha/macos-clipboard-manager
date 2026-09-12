@@ -146,8 +146,16 @@ public final class ClipboardHistoryController: ObservableObject {
     /// remains in effect for the next poll.
     @discardableResult
     public func copyItem(id: UUID) async -> Bool {
+        await copyItemWithReceipt(id: id) != nil
+    }
+
+    /// Restores one persisted item and returns the monitor's verified write
+    /// receipt. The receipt is used by automatic paste to detect a clipboard
+    /// replacement during focus restoration.
+    @discardableResult
+    public func copyItemWithReceipt(id: UUID) async -> ClipboardRestoreReceipt? {
         guard hasOpenedRepository, storageState == .ready, !isShuttingDown, !hasStorageFailure, !Task.isCancelled else {
-            return false
+            return nil
         }
 
         let item: ClipboardItem?
@@ -155,20 +163,26 @@ public final class ClipboardHistoryController: ObservableObject {
             item = try await repository.item(id: id)
         } catch {
             guard !isShuttingDown, !Task.isCancelled else {
-                return false
+                return nil
             }
             recordStorageFailure()
-            return false
+            return nil
         }
 
         guard !isShuttingDown, !hasStorageFailure, !Task.isCancelled,
               let item, item.payload != nil,
-              monitor.restore(item) else {
-            return false
+              let receipt = monitor.restoreReceipt(item) else {
+            return nil
         }
 
         enqueueUsageUpdate(for: id, at: Date())
-        return true
+        return receipt
+    }
+
+    /// Returns whether the pasteboard still contains the exact verified write
+    /// produced by `copyItemWithReceipt`.
+    public func isRestoreCurrent(_ receipt: ClipboardRestoreReceipt) -> Bool {
+        monitor.isCurrent(receipt)
     }
 
     /// Waits for accepted captures and then refreshes the currently selected query.
