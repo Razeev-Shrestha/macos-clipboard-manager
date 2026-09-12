@@ -152,15 +152,27 @@ verify_app() {
     local executable_name
     local short_version
     local build_version
+    local icon_name
+    local icon_file
     bundle_identifier="$(plist_value CFBundleIdentifier "$plist_path")"
     package_type="$(plist_value CFBundlePackageType "$plist_path")"
     executable_name="$(plist_value CFBundleExecutable "$plist_path")"
     short_version="$(plist_value CFBundleShortVersionString "$plist_path")"
     build_version="$(plist_value CFBundleVersion "$plist_path")"
+    if ! icon_name="$(plist_value CFBundleIconName "$plist_path")"; then
+        fail "$app_label does not declare a primary app icon name"
+    fi
+    if ! icon_file="$(plist_value CFBundleIconFile "$plist_path")"; then
+        fail "$app_label does not declare an app icon fallback file"
+    fi
 
     [[ "$bundle_identifier" == 'com.example.ClipboardManager' ]] || fail "$app_label bundle identifier is unexpected: $bundle_identifier"
     [[ "$package_type" == 'APPL' ]] || fail "$app_label bundle type is unexpected: $package_type"
     [[ -n "$executable_name" ]] || fail "$app_label has no executable name"
+    [[ "$icon_name" == 'AppIcon' ]] || fail "$app_label primary app icon name is unexpected: $icon_name"
+    [[ "$icon_file" == 'AppIcon' ]] || fail "$app_label app icon fallback file is unexpected: $icon_file"
+    [[ -s "$app_path/Contents/Resources/Assets.car" ]] || fail "$app_label is missing compiled app icon assets"
+    [[ -s "$app_path/Contents/Resources/AppIcon.icns" ]] || fail "$app_label is missing its app icon fallback"
 
     local executable_path="$app_path/Contents/MacOS/$executable_name"
     [[ -f "$executable_path" ]] || fail "$app_label executable is missing: $executable_path"

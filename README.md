@@ -15,6 +15,10 @@ and Intel, is locally ad-hoc signed, and is not notarized. Follow the [tester gu
 for installation, permissions and keyboard checks. [Performance measurements](docs/PERFORMANCE.md)
 include 1,000-item history, search, large payloads and native idle CPU/memory.
 
+The bundled app icon uses Apple's native Icon Composer format for macOS 26
+appearance modes and Retina sizes. The menu-bar icon uses a monochrome SF Symbol.
+See [icon artwork, provenance, and editing instructions](docs/ICON_DESIGN.md).
+
 The app stores accepted text, URLs, practical rich text, images, and ordered file/folder references in local SQLite history at
 `~/Library/Application Support/com.example.ClipboardManager/history.sqlite`.
 It opens storage asynchronously, keeps normal history rows metadata-only, and

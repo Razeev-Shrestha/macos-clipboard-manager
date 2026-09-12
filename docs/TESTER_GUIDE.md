@@ -25,7 +25,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ```
 
 The command runs Swift tests with `-warnings-as-errors`, builds a fresh Release
-product, signs it ad hoc, verifies the bundle and signature, checks the
+product, signs it ad hoc, verifies the bundle, app icon resources, and signature, checks the
 requested architectures, extracts the ZIP again for inspection, and writes all
 artifacts below a new directory in `build/Distribution/`. It does not launch
 the app. Set `PACKAGE_ARCHS=arm64` or `PACKAGE_ARCHS=x86_64` only when testing

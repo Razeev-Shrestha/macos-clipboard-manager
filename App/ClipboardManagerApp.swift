@@ -467,7 +467,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return
         }
         let item = statusItem ?? NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: "Clipboard Manager")
+        if let image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: "Clipboard Manager") {
+            image.isTemplate = true
+            item.button?.image = image
+        }
         let menu = NSMenu()
         menu.autoenablesItems = true
         menu.addItem(withTitle: "Open Clipboard", action: #selector(openClipboardFromMenu), keyEquivalent: "")

@@ -296,3 +296,24 @@ local distribution checks are complete. These limits are tester follow-up, not m
   and x86_64 slices, and omit all Debug test flags. Release was inspected without launching it against
   the General pasteboard. Packages stay in ignored `build/Distribution/`; no release, tag, credentials
   or generated product is committed. The tester guide explains local approval and permission behavior.
+
+## Native app icon update — 2026-09-12
+
+- Added original clipboard/history artwork and the editable macOS-only
+  `Assets/AppIcon.icon` document. Xcode compiles the native appearance variants
+  and Retina assets into both configurations. Build 2 retains version 0.1.0 and
+  the macOS 26.0 deployment target. The menu-bar SF Symbol explicitly uses
+  template rendering.
+- Default, Dark, Clear Light/Dark, and Tinted Light/Dark native exports were
+  inspected, including 16/32 pixel readability. `NSWorkspace` resolves the
+  compiled icon correctly. `Assets.car` contains modern 32–1024 pixel renditions
+  and appearance stacks; the generated ICNS fallback contains 16/32/128/256
+  pixel representations. See `ICON_DESIGN.md` for the retained artwork, exact
+  generation prompt, native editing instructions, and compatibility evidence.
+- Clean universal Debug and Release builds pass with unsuppressed Swift
+  warnings treated as errors, all 145 tests pass, and strict signatures verify.
+  The package validator now requires both icon metadata keys and compiled icon
+  resources in the original and extracted app. No clipboard or focus logic was
+  changed for the icon update.
+- Independent icon/source/build review found no blocker. The original no-icon
+  bundle fails the new resource requirements, while build 2 satisfies them.
