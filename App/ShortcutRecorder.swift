@@ -6,10 +6,10 @@ import SwiftUI
 enum ShortcutPresentation {
     static func text(for configuration: GlobalClipboardShortcutConfiguration) -> String {
         var text = ""
-        if configuration.modifiers & UInt32(cmdKey) != 0 { text += "⌘" }
-        if configuration.modifiers & UInt32(shiftKey) != 0 { text += "⇧" }
-        if configuration.modifiers & UInt32(optionKey) != 0 { text += "⌥" }
-        if configuration.modifiers & UInt32(controlKey) != 0 { text += "⌃" }
+        if configuration.modifiers & UInt32(cmdKey) != 0 { text += "⌘ " }
+        if configuration.modifiers & UInt32(shiftKey) != 0 { text += "⇧ " }
+        if configuration.modifiers & UInt32(optionKey) != 0 { text += "⌥ " }
+        if configuration.modifiers & UInt32(controlKey) != 0 { text += "⌃ " }
         return text + keyName(for: configuration.keyCode)
     }
 

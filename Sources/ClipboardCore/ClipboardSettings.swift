@@ -24,6 +24,13 @@ public struct ClipboardRetentionSettings: Codable, Equatable, Sendable {
     }
 }
 
+/// A user preference independent of AppKit's native appearance objects.
+public enum ClipboardAppearance: String, Codable, CaseIterable, Sendable {
+    case system
+    case light
+    case dark
+}
+
 /// Persisted preferences that do not contain clipboard payloads.
 public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
     public static let `default` = ClipboardManagerSettings()
@@ -33,6 +40,8 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
     public var excludedBundleIdentifiers: Set<String>
     public var menuBarVisible: Bool
     public var launchAtLogin: Bool
+    public var animationsEnabled: Bool
+    public var appearance: ClipboardAppearance
     public var globalShortcut: GlobalClipboardShortcutConfiguration
 
     public init(
@@ -41,6 +50,8 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
         excludedBundleIdentifiers: Set<String> = [],
         menuBarVisible: Bool = true,
         launchAtLogin: Bool = false,
+        animationsEnabled: Bool = true,
+        appearance: ClipboardAppearance = .system,
         globalShortcut: GlobalClipboardShortcutConfiguration = .default
     ) {
         self.retention = retention
@@ -48,6 +59,8 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.menuBarVisible = menuBarVisible
         self.launchAtLogin = launchAtLogin
+        self.animationsEnabled = animationsEnabled
+        self.appearance = appearance
         self.globalShortcut = globalShortcut
     }
 
@@ -72,6 +85,8 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
         case excludedBundleIdentifiers
         case menuBarVisible
         case launchAtLogin
+        case animationsEnabled
+        case appearance
         case globalShortcut
     }
 
@@ -82,6 +97,8 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
         excludedBundleIdentifiers = try container.decodeIfPresent(Set<String>.self, forKey: .excludedBundleIdentifiers) ?? []
         menuBarVisible = try container.decodeIfPresent(Bool.self, forKey: .menuBarVisible) ?? true
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        animationsEnabled = try container.decodeIfPresent(Bool.self, forKey: .animationsEnabled) ?? true
+        appearance = try container.decodeIfPresent(ClipboardAppearance.self, forKey: .appearance) ?? .system
         globalShortcut = try container.decodeIfPresent(
             GlobalClipboardShortcutConfiguration.self,
             forKey: .globalShortcut

@@ -511,7 +511,14 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
     }
 
     private func validURL(from string: String) -> URL? {
-        guard let url = URL(string: string),
+        let candidate = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty else {
+            return nil
+        }
+        if let webURL = ClipboardTextClassifier.webURL(from: candidate) {
+            return webURL
+        }
+        guard let url = URL(string: candidate),
               let scheme = url.scheme,
               !scheme.isEmpty
         else {

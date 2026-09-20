@@ -49,7 +49,12 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
     public var onKeyDown: ((NSEvent) -> Bool)?
 
     public var isVisible: Bool {
-        isPresented && panel.isVisible
+        isPresented && panel.isVisible && !panel.isMiniaturized
+    }
+
+    /// Whether this presentation is still open, including its minimized state.
+    public var hasPresentedWindow: Bool {
+        isPresented
     }
 
     public var previousApplication: NSRunningApplication? {
@@ -65,17 +70,29 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
 
     private static let compactSize = NSSize(width: 760, height: 520)
     private static let expandedSize = NSSize(width: 1_040, height: 640)
+    private static let minimumContentSize = NSSize(width: 620, height: 420)
+    private static let panelStyle: NSWindow.StyleMask = [
+        .titled, .closable, .miniaturizable, .resizable, .fullSizeContentView
+    ]
     private static let verticalOffset: CGFloat = 32
 
     private let panel: ClipboardPanel
+    private let frontmostApplication: () -> NSRunningApplication?
     private var isPresented = false
+    private var isMiniaturizing = false
+    private var isReopeningMinimizedPanel = false
     private var isPreviewExpanded = false
     private var previousApplicationStorage: NSRunningApplication?
 
-    public init(contentView: NSView) {
+    public convenience init(contentView: NSView) {
+        self.init(contentView: contentView, frontmostApplication: { NSWorkspace.shared.frontmostApplication })
+    }
+
+    init(contentView: NSView, frontmostApplication: @escaping () -> NSRunningApplication?) {
+        self.frontmostApplication = frontmostApplication
         panel = ClipboardPanel(
-            contentRect: NSRect(origin: .zero, size: Self.compactSize),
-            styleMask: [.borderless],
+            contentRect: NSRect(origin: .zero, size: Self.windowSize(forContentSize: Self.compactSize)),
+            styleMask: Self.panelStyle,
             backing: .buffered,
             defer: true
         )
@@ -84,10 +101,15 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
         panel.controller = self
         panel.delegate = self
         panel.contentView = contentView
+        panel.title = "Clipboard Manager"
+        panel.titlebarAppearsTransparent = true
+        // The background can reach behind the titlebar, while AppKit's safe
+        // area keeps the hosted controls below the native window controls.
+        panel.contentMinSize = Self.windowSize(forContentSize: Self.minimumContentSize)
         panel.isFloatingPanel = true
         panel.level = .floating
-        panel.hidesOnDeactivate = true
-        panel.collectionBehavior = [.moveToActiveSpace, .transient]
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.moveToActiveSpace, .managed, .fullScreenNone]
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -95,30 +117,36 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
 
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(applicationDidResignActive(_:)),
-            name: NSApplication.didResignActiveNotification,
-            object: NSApp
-        )
-        NotificationCenter.default.addObserver(
-            self,
             selector: #selector(applicationDidChangeScreenParameters(_:)),
             name: NSApplication.didChangeScreenParametersNotification,
             object: NSApp
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(workspaceDidActivateApplication(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
         )
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     /// Shows the panel on the display containing the pointer and captures the
-    /// frontmost non-self app before this app is activated.
-    public func show() {
+    /// frontmost non-self app before this app is activated. A supplied app is
+    /// a fallback for returning from an auxiliary window owned by this app.
+    public func show(previousApplication: NSRunningApplication? = nil) {
         guard !isVisible else {
             return
         }
 
-        capturePreviousApplication()
+        if previousApplicationStorage?.isTerminated == true {
+            previousApplicationStorage = nil
+        }
+        capturePreviousApplication(previousApplication)
+        capturePreviousApplication(frontmostApplication())
         onWillShow?()
 
         if let screen = preferredScreen() {
@@ -130,6 +158,10 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
 
         isPresented = true
         NSApp.activate()
+        if panel.isMiniaturized {
+            isReopeningMinimizedPanel = true
+            panel.deminiaturize(nil)
+        }
         panel.makeKeyAndOrderFront(nil)
     }
 
@@ -149,8 +181,10 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
         }
 
         let previousApplication = previousApplicationStorage
-        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        let frontmostApplication = frontmostApplication()
         isPresented = false
+        isMiniaturizing = false
+        isReopeningMinimizedPanel = false
         panel.orderOut(nil)
 
         if Self.shouldRestoreFocus(
@@ -192,7 +226,7 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
     }
 
     static func panelFrame(for visibleFrame: NSRect, expanded: Bool) -> NSRect {
-        let requestedSize = expanded ? expandedSize : compactSize
+        let requestedSize = windowSize(forContentSize: expanded ? expandedSize : compactSize)
         let width = min(requestedSize.width, max(0, visibleFrame.width))
         let height = min(requestedSize.height, max(0, visibleFrame.height))
         let size = NSSize(width: width, height: height)
@@ -208,6 +242,15 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
             y: min(max(unclampedOrigin.y, visibleFrame.minY), maxY)
         )
         return NSRect(origin: origin, size: size)
+    }
+
+    private static func windowSize(forContentSize contentSize: NSSize) -> NSSize {
+        // Treat the design dimensions as usable content below the titlebar,
+        // even though the background fills the complete window frame.
+        NSWindow.frameRect(
+            forContentRect: NSRect(origin: .zero, size: contentSize),
+            styleMask: panelStyle.subtracting(.fullSizeContentView)
+        ).size
     }
 
     /// Chooses a currently attached visible frame for a panel whose former screen
@@ -256,11 +299,14 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
     }
 
     @objc
-    private func applicationDidResignActive(_ notification: Notification) {
-        guard isPresented else {
+    private func workspaceDidActivateApplication(_ notification: Notification) {
+        guard isPresented, isMiniaturizing || panel.isMiniaturized else {
             return
         }
-        close(restoringFocus: false)
+        // A Dock thumbnail can activate us before deminiaturization finishes.
+        // Remember app switches while minimized so that activation cannot erase
+        // the actual destination the user was working in.
+        capturePreviousApplication(notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
     }
 
     @objc
@@ -288,15 +334,16 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
         return max(0, intersection.width) * max(0, intersection.height)
     }
 
-    private func capturePreviousApplication() {
+    private func capturePreviousApplication(_ frontmostApplication: NSRunningApplication?) {
         let ownProcessIdentifier = ProcessInfo.processInfo.processIdentifier
-        let frontmostApplication = NSWorkspace.shared.frontmostApplication
         if let frontmostApplication,
+           !frontmostApplication.isTerminated,
+           frontmostApplication.processIdentifier > 0,
            frontmostApplication.processIdentifier != ownProcessIdentifier {
             previousApplicationStorage = frontmostApplication
-        } else {
-            previousApplicationStorage = nil
         }
+        // When reopening from our own menu or a minimized panel, activation
+        // may already belong to us. Keep the last target until actual close.
     }
 
     private func preferredScreen() -> NSScreen? {
@@ -312,5 +359,44 @@ public final class ClipboardPanelController: NSObject, NSWindowDelegate {
         }
         close(restoringFocus: true)
         return false
+    }
+
+    public func windowWillMiniaturize(_ notification: Notification) {
+        guard notification.object as? NSWindow === panel else {
+            return
+        }
+        isMiniaturizing = true
+    }
+
+    public func windowDidMiniaturize(_ notification: Notification) {
+        guard notification.object as? NSWindow === panel else {
+            return
+        }
+        isMiniaturizing = false
+    }
+
+    public func windowDidDeminiaturize(_ notification: Notification) {
+        guard notification.object as? NSWindow === panel else {
+            return
+        }
+        let wasReopenedByController = isReopeningMinimizedPanel
+        isReopeningMinimizedPanel = false
+        guard isPresented else {
+            panel.orderOut(nil)
+            return
+        }
+        guard !wasReopenedByController else {
+            return
+        }
+        capturePreviousApplication(frontmostApplication())
+        onWillShow?()
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    public func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        guard window === panel else {
+            return newFrame
+        }
+        return window.screen?.visibleFrame ?? newFrame
     }
 }

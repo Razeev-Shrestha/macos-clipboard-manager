@@ -266,6 +266,25 @@ public final class ClipboardHistoryController: ObservableObject {
         return item
     }
 
+    public func loadImageData(id: UUID) async -> Data? {
+        let item: ClipboardItem?
+        do {
+            item = try await loadItem(id: id)
+        } catch {
+            return nil
+        }
+        guard let item,
+              item.primaryType == .image,
+              let payload = item.payload
+        else {
+            return nil
+        }
+        return payload.representations.first(where: {
+            $0.typeIdentifier == NSPasteboard.PasteboardType.png.rawValue
+                || $0.typeIdentifier == NSPasteboard.PasteboardType.tiff.rawValue
+        })?.data
+    }
+
     @discardableResult
     public func setPinned(_ pinned: Bool, for id: UUID) async -> Bool {
         let actionDate = now()
@@ -603,7 +622,9 @@ public final class ClipboardHistoryController: ObservableObject {
         let primaryType: ClipboardPrimaryType
         switch capture.primaryType {
         case .text, .code:
-            if let searchableText, let url = URL(string: searchableText), url.scheme != nil {
+            if payload.url != nil
+                || ClipboardTextClassifier.webURL(from: payload.plainText ?? searchableText ?? "") != nil
+            {
                 primaryType = .url
             } else if ClipboardTextClassifier.isLikelyCode(searchableText ?? "") {
                 primaryType = .code

@@ -652,6 +652,22 @@ final class ClipboardCoreTests: XCTestCase {
         )
     }
 
+    func testNamedPrivatePasteboardWWWTextIsRecognizedAsURL() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let boundary = NSPasteboardBoundary(pasteboard: pasteboard)
+
+        _ = pasteboard.prepareForNewContents(with: [.currentHostOnly])
+        XCTAssertTrue(pasteboard.setString("www.example.invalid/fixture", forType: .string))
+
+        guard case .snapshot(let snapshot) = boundary.readSnapshotIfStable(expectedChangeCount: pasteboard.changeCount) else {
+            XCTFail("expected a URL snapshot")
+            return
+        }
+        XCTAssertEqual(snapshot.capture.primaryType, .url)
+        XCTAssertEqual(snapshot.capture.payload.url?.absoluteString, "https://www.example.invalid/fixture")
+    }
+
     private func makeCapture(text: String, source: ClipboardSource? = nil) -> ClipboardCapture {
         let payload = ClipboardPayload(
             primaryTypeIdentifier: NSPasteboard.PasteboardType.string.rawValue,

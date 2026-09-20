@@ -317,3 +317,84 @@ local distribution checks are complete. These limits are tester follow-up, not m
   changed for the icon update.
 - Independent icon/source/build review found no blocker. The original no-icon
   bundle fails the new resource requirements, while build 2 satisfies them.
+
+
+## UI refresh — 2026-09-12
+
+- Build 3 uses a native titled, resizable floating panel with close, minimize,
+  and screen-sized zoom controls. Full-size content lets the Liquid Glass shell
+  extend behind the titlebar while AppKit's safe area protects the controls.
+  Search, recording controls, and footer surround a separate opaque reading area.
+- Filter selection moves over 180 ms; Settings tabs crossfade with a small offset.
+  Both honor the animation preference and Reduce Motion. Reduce Transparency uses
+  opaque chrome; increased contrast strengthens selection boundaries. Environment
+  guards were inspected; system accessibility preferences were not changed in this run.
+- Shortcut hints use separate keycaps in a four-column, two-row layout. Native
+  screenshots verify readable Light and Dark appearances at default size, expanded
+  image preview, and the minimum 620 × 420 usable content size. Native zoom expanded
+  to the visible screen and restored its previous size; minimization removed the
+  window, and reopening retained the usable panel.
+- Settings opens from the panel gear, menu, or Command-comma. It starts at the top
+  of General, rather than scrolling to the shortcut recorder. General includes
+  System/Light/Dark appearance, animation, startup, menu visibility, history count,
+  history age, and global shortcut controls. Privacy and Permissions remain available.
+  Appearance changes were checked live; retention and animation choices survived a
+  normal restart. Test preferences were restored to System, animations on, 30 days,
+  recording active, and menu visibility on. Production preferences were untouched.
+- Native keyboard QA exercised Down, Tab, Space to pause recording, Return to
+  resume, Tab/Return to open Settings, and arrow keys to change Settings tabs.
+  Explicit focus handling prevents these controls from triggering preview or paste.
+- An isolated named pasteboard and synthetic database were used for all clipboard
+  QA. Paused content was not replayed after resuming. Copy restored original rich-text
+  representations exactly; automatic paste inserted the selected synthetic text into
+  the dedicated probe editor and restored its active/key/first-responder state. Red
+  close also returned focus to that editor. The database kept three rows, with integrity
+  `ok`, and the test apps quit normally. No production clipboard payload was logged.
+- Independent review found keyboard-focus and native Dock-reopen issues; both were
+  fixed and reviewed. The final full warning-as-error suite passes all 155 tests,
+  including 13 native window tests. Debug and universal Release builds pass; original
+  and ZIP-extracted Release apps pass strict signature and bundle validation. The only
+  Xcode warning remains skipped AppIntents metadata extraction.
+- The display name and packaged bundle are now Clipboard Manager / Clipboard Manager.app;
+  the executable and bundle identifier remain stable. Menu-bar artwork resolves the
+  same compiled Icon Composer asset as Finder and Spotlight. Its resolved image was
+  rendered and inspected from the installed bundle. Direct status-menu automation was
+  not needed to change the image source.
+- Final output: `build/Distribution/ClipboardManager-Release-20260912T113748Z-KTVJ01/`.
+  The signed app was installed at `~/Applications/Clipboard Manager.app` and its binary
+  hash matched the verified package. Generated packages, fixtures, and test logs remain
+  ignored. Source changes are left in the working tree; no commit or push was requested.
+
+## Menu-bar icon and Settings navigation — 2026-09-13
+
+- Version 0.1.0, build 4 replaces the full-color status tile with a transparent
+  AppKit template glyph using the original clipboard, three snippets, and offset
+  sheet motif. Native 20/40 px renders verify monochrome pixels and transparent
+  corners; Finder and Spotlight keep the original Icon Composer app artwork.
+- Normal macOS application menus appear while Clipboard, Settings, or Help is
+  presented, including minimized windows. The status menu now includes Help.
+  Settings and local Help both provide an accessible, keyboard-usable back button.
+  Settings retains arrow-key section navigation without the extra picker focus
+  rectangle. Changing settings preserves the visible application menus.
+- Back navigation carries the previous external paste destination. A scoped
+  workspace observer tracks newer external activations while Settings/Help is
+  open or minimized; own and terminated applications cannot replace the target.
+  Activation-policy updates do not activate the app or interrupt pending paste.
+- Native isolated QA verified app-menu Settings and Help, Command-Comma, Help
+  content and keyboard Back, initial Settings position, clean tab appearance,
+  arrow navigation, settings changes, and Settings → Clipboard → Return pasting
+  synthetic rich text into the dedicated editor with active/key/responder focus.
+  CUA's simulated cross-app focus did not produce corresponding NSWorkspace
+  activation notifications, so it cannot certify the latest-external-app-switch
+  case. That path has independent source review and controller fallback tests.
+  Temporary metadata-only tracing was removed before Release packaging.
+- All 158 tests pass with Swift warnings treated as errors, including 16 native
+  panel tests. Debug and universal Release builds pass; original and extracted
+  Release apps pass strict signatures, architecture, icon, and bundle checks.
+  The only Xcode warning remains skipped AppIntents metadata extraction.
+- Final package: `build/Distribution/ClipboardManager-Release-20260913T045553Z-T0Gko8/`.
+  The verified app was installed and reopened at `/Applications/Clipboard Manager.app`;
+  the running executable path and installed binary hash match the package. The
+  previous bundle is retained in `build/Reinstall-backup-d53n04w2/`. Reinstallation
+  does not replace the production history database or preferences. All validation
+  fixtures used named synthetic pasteboards and isolated storage.

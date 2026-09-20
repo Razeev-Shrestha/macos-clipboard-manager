@@ -38,6 +38,7 @@ public final class ClipboardPanelViewModel: ObservableObject {
     private var previewLoadTask: Task<Void, Never>?
     private var previewLoadGeneration = 0
     private var isPanelPresented = false
+    private var hasChromeControlFocus = false
 
     public init(controller: ClipboardHistoryController) {
         self.controller = controller
@@ -45,6 +46,7 @@ public final class ClipboardPanelViewModel: ObservableObject {
 
     public func prepareForOpening(itemIDs: [UUID]) {
         isPanelPresented = true
+        hasChromeControlFocus = false
         selection.resetForOpening(itemIDs: itemIDs)
         reconcileVisibleItems(with: itemIDs)
         synchronizeSelection()
@@ -54,6 +56,7 @@ public final class ClipboardPanelViewModel: ObservableObject {
 
     public func didClose() {
         isPanelPresented = false
+        hasChromeControlFocus = false
         listOwnsKeyboardFocus = false
         cancelPreviewLoad()
     }
@@ -146,9 +149,22 @@ public final class ClipboardPanelViewModel: ObservableObject {
             && displayedFilter == controller.filter
     }
 
+    public func chromeControlFocusChanged(_ isFocused: Bool) {
+        hasChromeControlFocus = isFocused
+        if isFocused { listOwnsKeyboardFocus = false }
+    }
+
     public func handleKeyDown(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let isCommand = modifiers == [.command]
+
+        // Let a focused native control consume activation/navigation keys.
+        // Explicit row selection can reclaim list actions even if AppKit keeps
+        // the former control as first responder. Command shortcuts remain global.
+        if hasChromeControlFocus, !listOwnsKeyboardFocus, modifiers.isEmpty,
+           [36, 76, 49, 123, 124, 125, 126].contains(event.keyCode) {
+            return false
+        }
 
         if isCommand, event.charactersIgnoringModifiers?.lowercased() == "k" {
             controller.query = ""

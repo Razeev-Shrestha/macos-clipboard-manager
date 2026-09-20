@@ -129,6 +129,24 @@ final class RichPasteboardBoundaryTests: XCTestCase {
         XCTAssertNil(representationData(.URL, in: snapshot.capture.payload.representations))
     }
 
+    func testPlainTextURLWithCopiedWhitespaceIsRecognizedAsLink() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let boundary = NSPasteboardBoundary(pasteboard: pasteboard)
+        let copiedURL = "  https://example.invalid/copied-link  \n"
+
+        _ = pasteboard.prepareForNewContents(with: [.currentHostOnly])
+        XCTAssertTrue(pasteboard.setString(copiedURL, forType: .string))
+
+        let result = boundary.readSnapshotIfStable(expectedChangeCount: pasteboard.changeCount)
+        guard case .snapshot(let snapshot) = result else {
+            XCTFail("expected a plain-text URL snapshot")
+            return
+        }
+        XCTAssertEqual(snapshot.capture.primaryType, .url)
+        XCTAssertEqual(snapshot.capture.payload.url?.absoluteString, "https://example.invalid/copied-link")
+    }
+
     func testImageContentOutranksURLAndPlainTextRepresentations() {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }

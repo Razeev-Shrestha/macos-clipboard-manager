@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "A10000000000000000000009"
-               BuildableName = "ClipboardManager.app"
+               BuildableName = "Clipboard Manager.app"
                BlueprintName = "ClipboardManager"
                ReferencedContainer = "container:ClipboardManager.xcodeproj">
             </BuildableReference>
@@ -44,7 +44,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A10000000000000000000009"
-            BuildableName = "ClipboardManager.app"
+            BuildableName = "Clipboard Manager.app"
             BlueprintName = "ClipboardManager"
             ReferencedContainer = "container:ClipboardManager.xcodeproj">
          </BuildableReference>
@@ -61,7 +61,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A10000000000000000000009"
-            BuildableName = "ClipboardManager.app"
+            BuildableName = "Clipboard Manager.app"
             BlueprintName = "ClipboardManager"
             ReferencedContainer = "container:ClipboardManager.xcodeproj">
          </BuildableReference>

@@ -137,6 +137,42 @@ final class ClipboardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(model.selectedID, second)
     }
 
+    func testChromeFocusLetsNativeControlsHandleNavigationAndActivation() {
+        let model = makeModel()
+        let itemID = UUID()
+        model.acceptPublishedResults(results([itemID]))
+        model.select(itemID)
+        model.chromeControlFocusChanged(true)
+        var requestedPaste = false
+        model.onPasteRequested = { _, _ in requestedPaste = true }
+
+        for keyCode: UInt16 in [36, 76, 49, 123, 124, 125, 126] {
+            XCTAssertFalse(model.handleKeyDown(keyEvent(keyCode: keyCode)))
+        }
+        XCTAssertFalse(model.listOwnsKeyboardFocus)
+        XCTAssertFalse(model.isPreviewVisible)
+        XCTAssertFalse(requestedPaste)
+
+        model.chromeControlFocusChanged(false)
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 36)))
+        XCTAssertTrue(requestedPaste)
+    }
+
+    func testChromeFocusPreservesCommandCopyAndPointerPreview() {
+        let model = makeModel()
+        let itemID = UUID()
+        model.acceptPublishedResults(results([itemID]))
+        model.chromeControlFocusChanged(true)
+        var intent: ClipboardPasteIntent?
+        model.onPasteRequested = { _, value in intent = value }
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 36, modifiers: .command)))
+        XCTAssertEqual(intent, .copyOnly)
+
+        model.select(itemID)
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 49)))
+        XCTAssertTrue(model.isPreviewVisible)
+    }
+
     func testReturnRequestsPasteForTheCurrentSelection() {
         let model = makeModel()
         let itemID = UUID()

@@ -14,9 +14,10 @@ can apply its enclosure, material, and shadow.
   `sips`; no third-party asset library or runtime dependency is required.
 - Xcode compiles the document into the app bundle. Both Debug and Release use
   `AppIcon` as their app icon name.
-- The menu-bar button uses the native `clipboard` SF Symbol as a template image,
-  letting macOS choose the foreground contrast for the current menu-bar style.
-  The in-app action and content-type icons also remain native SF Symbols.
+- The menu-bar button uses `ClipboardStatusIcon.image`, a transparent 20 pt
+  AppKit vector template of the same clipboard, three snippets, and offset sheet.
+  `isTemplate` lets macOS supply the menu-bar contrast and selection color.
+  Finder and Spotlight retain the full native Icon Composer artwork.
 
 The application requires macOS 26 or later. Icon Composer handles the system
 appearance variants and size representations from one document. An icon does

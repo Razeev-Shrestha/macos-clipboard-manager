@@ -6,6 +6,28 @@ import Foundation
 public enum ClipboardTextClassifier {
     private static let maximumPrefixLength = 8_192
 
+    public static func webURL(from text: String) -> URL? {
+        let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty else {
+            return nil
+        }
+
+        if let url = URL(string: candidate),
+           let scheme = url.scheme?.lowercased(),
+           (scheme == "http" || scheme == "https"),
+           url.host != nil
+        {
+            return url
+        }
+
+        guard candidate.lowercased().hasPrefix("www."),
+              let url = URL(string: "https://\(candidate)")
+        else {
+            return nil
+        }
+        return url
+    }
+
     public static func isLikelyCode(_ text: String) -> Bool {
         let sample = String(text.prefix(maximumPrefixLength))
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -20,8 +42,7 @@ public enum ClipboardTextClassifier {
     }
 
     private static func looksLikeWebURL(_ text: String) -> Bool {
-        let lowercaseText = text.lowercased()
-        return lowercaseText.hasPrefix("http://") || lowercaseText.hasPrefix("https://")
+        webURL(from: text) != nil
     }
 
     private static func isJSONContainer(_ text: String) -> Bool {

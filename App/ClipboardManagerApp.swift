@@ -10,11 +10,24 @@ struct ClipboardManagerApp: App {
         Settings {
             ClipboardSettingsView(delegate: appDelegate)
         }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { appDelegate.openSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
+            CommandGroup(after: .appSettings) {
+                Button("Open Clipboard") { appDelegate.openPanel() }
+            }
+            CommandGroup(replacing: .help) {
+                Button("Clipboard Manager Help") { appDelegate.openHelp() }
+                    .keyboardShortcut("?", modifiers: .command)
+            }
+        }
     }
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSWindowDelegate {
     let controller: ClipboardHistoryController
     let settings: ClipboardSettingsStore
     let launchAtLogin = LaunchAtLoginController()
@@ -29,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var pasteCoordinator: ClipboardPasteCoordinator?
     private var statusItem: NSStatusItem?
     private var settingsWindowController: NSWindowController?
+    private var helpWindowController: NSWindowController?
+    private var isPresentingAuxiliaryWindow = false
+    private var auxiliaryPasteDestination: NSRunningApplication?
     private let lifecycleObserver = ClipboardLifecycleObserver()
     private var appliedShortcutConfiguration: GlobalClipboardShortcutConfiguration?
     private var hasStartedController = false
@@ -56,6 +72,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         apply(settings.value)
         settings.onChange = { [weak self] value in self?.apply(value) }
         lifecycleObserver.start()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(auxiliaryWorkspaceDidActivate(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
 
         Task { [weak self] in
             guard let self else { return }
@@ -69,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        panel?.show()
+        openPanel()
         return true
     }
 
@@ -82,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         shortcut?.unregister()
         pasteCoordinator?.shutdown()
         lifecycleObserver.stop()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         Task { [weak self] in
             await self?.controller.shutdown()
             sender.reply(toApplicationShouldTerminate: true)
@@ -94,7 +117,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return
         }
 
-        let hostingView = ClipboardPanelHostingView(rootView: ClipboardPanelView(model: panelModel))
+        let hostingView = ClipboardPanelHostingView(rootView: ClipboardPanelView(
+            model: panelModel,
+            settings: settings,
+            makeSettingsView: { [weak self] selection in
+                guard let self else { return AnyView(EmptyView()) }
+                return AnyView(
+                    ClipboardSettingsView(
+                        delegate: self,
+                        selectedTab: selection,
+                        embedded: true
+                    )
+                )
+            }
+        ))
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         hostingView.onDidBecomeKey = { [weak self] in
             self?.panelModel.requestSearchFocus()
         }
@@ -103,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             guard let self else {
                 return
             }
+            NSApp.setActivationPolicy(.regular)
             self.pasteCoordinator?.panelDidOpen()
             self.panelModel.updateAutomaticPasteAvailability(
                 self.pasteCoordinator?.canAutomaticallyPaste ?? false
@@ -112,10 +151,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         panel.onDidClose = { [weak self] in
             self?.pasteCoordinator?.panelDidClose()
             self?.panelModel.didClose()
+            self?.updateActivationPolicy()
         }
         panel.onKeyDown = { [weak self] event in
             guard let self else {
                 return false
+            }
+            if event.keyCode == 43,
+               event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
+                self.openSettings()
+                return true
             }
             return self.panelModel.handleKeyDown(event)
         }
@@ -144,8 +189,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             permittedTarget: { [weak self] target in
                 self?.permitsAutomaticPaste(to: target) ?? false
             },
-            onOutcome: { [weak panelModel] outcome in
-                panelModel?.receivePasteOutcome(outcome)
+            onOutcome: { [weak self] outcome in
+                self?.panelModel.receivePasteOutcome(outcome)
+                self?.updateActivationPolicy()
             }
         )
         pasteCoordinator = coordinator
@@ -208,7 +254,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         oldShortcut?.unregister()
         let shortcut = GlobalClipboardShortcut(configuration: configuration)
         shortcut.onPressed = { [weak self] in
-            self?.panel?.toggle()
+            guard let self else { return }
+            if panel?.isVisible == true {
+                panel?.close(restoringFocus: true)
+            } else {
+                returnToClipboard()
+            }
         }
 
         do {
@@ -411,7 +462,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     #endif
 
     func openPanel() {
-        panel?.show()
+        returnToClipboard()
+    }
+
+    func returnToClipboard() {
+        isPresentingAuxiliaryWindow = true
+        updateActivationPolicy()
+        settingsWindowController?.close()
+        helpWindowController?.close()
+        panel?.show(previousApplication: auxiliaryPasteDestination)
+        auxiliaryPasteDestination = nil
+        isPresentingAuxiliaryWindow = false
+        updateActivationPolicy()
     }
 
     func toggleRecording() {
@@ -441,10 +503,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     private func apply(_ value: ClipboardManagerSettings) {
+        switch value.appearance {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
         controller.setRecordingPaused(value.recordingPaused)
         controller.setExcludedBundleIdentifiers(value.excludedBundleIdentifiers)
         configureStatusItem(visible: value.menuBarVisible)
-        NSApp.setActivationPolicy(value.menuBarVisible ? .accessory : .regular)
+        updateActivationPolicy()
         let activeShortcut = installShortcut(configuration: value.globalShortcut)
         panelModel.updateShortcutHint(
             activeShortcut.map { ShortcutPresentation.text(for: $0) } ?? "Shortcut unavailable"
@@ -467,10 +534,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return
         }
         let item = statusItem ?? NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: "Clipboard Manager") {
-            image.isTemplate = true
-            item.button?.image = image
-        }
+        item.button?.image = ClipboardStatusIcon.image
+        item.button?.imageScaling = .scaleProportionallyDown
+        item.button?.toolTip = "Clipboard Manager"
+        item.button?.setAccessibilityLabel("Clipboard Manager")
         let menu = NSMenu()
         menu.autoenablesItems = true
         menu.addItem(withTitle: "Open Clipboard", action: #selector(openClipboardFromMenu), keyEquivalent: "")
@@ -483,6 +550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         )
         clearHistoryItem.isEnabled = controller.storageState == .ready
         menu.addItem(withTitle: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
+        menu.addItem(withTitle: "Clipboard Manager Help", action: #selector(openHelpFromMenu), keyEquivalent: "?")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Clipboard Manager", action: #selector(quitFromMenu), keyEquivalent: "q")
         for item in menu.items { item.target = self }
@@ -492,23 +560,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func openClipboardFromMenu() { openPanel() }
     @objc private func toggleRecordingFromMenu() { toggleRecording() }
-    @objc private func openSettingsFromMenu() {
+    @objc private func openSettingsFromMenu() { openSettings() }
+    @objc private func openHelpFromMenu() { openHelp() }
+
+    func openSettings() {
+        beginAuxiliaryPresentation()
+        defer { endAuxiliaryPresentation() }
+        panel?.close(restoringFocus: false)
+        helpWindowController?.close()
         if let window = settingsWindowController?.window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
         } else {
             let viewController = NSHostingController(rootView: ClipboardSettingsView(delegate: self))
             let window = NSWindow(contentViewController: viewController)
             window.title = "Clipboard Manager Settings"
+            window.delegate = self
             window.styleMask = [.titled, .closable, .miniaturizable]
-            window.setContentSize(NSSize(width: 560, height: 440))
+            window.titlebarAppearsTransparent = true
+            window.setContentSize(NSSize(width: 620, height: 520))
             window.center()
             window.isReleasedWhenClosed = false
             let controller = NSWindowController(window: window)
             settingsWindowController = controller
             controller.showWindow(nil)
         }
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
+
+    func openHelp() {
+        beginAuxiliaryPresentation()
+        defer { endAuxiliaryPresentation() }
+        panel?.close(restoringFocus: false)
+        settingsWindowController?.close()
+        if let window = helpWindowController?.window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            let viewController = NSHostingController(rootView: ClipboardHelpView(delegate: self))
+            let window = NSWindow(contentViewController: viewController)
+            window.title = "Clipboard Manager Help"
+            window.delegate = self
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.titlebarAppearsTransparent = true
+            window.setContentSize(NSSize(width: 620, height: 520))
+            window.center()
+            window.isReleasedWhenClosed = false
+            let controller = NSWindowController(window: window)
+            helpWindowController = controller
+            controller.showWindow(nil)
+        }
+        NSApp.activate()
+    }
+
+    private func beginAuxiliaryPresentation() {
+        if let destination = panel?.previousApplication {
+            auxiliaryPasteDestination = destination
+        } else if let destination = NSWorkspace.shared.frontmostApplication,
+                  destination.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            auxiliaryPasteDestination = destination
+        }
+        isPresentingAuxiliaryWindow = true
+        updateActivationPolicy()
+    }
+
+    /// Keep Back navigation tied to the most recently used external app, including
+    /// when Settings or Help has been minimized. Self activation must not erase it.
+    @objc private func auxiliaryWorkspaceDidActivate(_ notification: Notification) {
+        let hasAuxiliaryWindow = [settingsWindowController?.window, helpWindowController?.window]
+            .compactMap { $0 }
+            .contains { $0.isVisible || $0.isMiniaturized }
+        guard !isTerminating, hasAuxiliaryWindow,
+              let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication,
+              application.processIdentifier > 0,
+              application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              !application.isTerminated else { return }
+        auxiliaryPasteDestination = application
+    }
+
+    private func endAuxiliaryPresentation() {
+        isPresentingAuxiliaryWindow = false
+        updateActivationPolicy()
+    }
+
+    /// Accessory apps have no main menu. Present normal app menus while a user
+    /// window is open, then return to the menu-bar utility when it is dismissed.
+    /// Changing policy must never activate the app during paste focus handoff.
+    private func updateActivationPolicy(excluding closingWindow: NSWindow? = nil) {
+        guard !isTerminating else { return }
+        let auxiliaryWindowOpen = [settingsWindowController?.window, helpWindowController?.window]
+            .compactMap { $0 }
+            .contains { $0 !== closingWindow && ($0.isVisible || $0.isMiniaturized) }
+        let needsAppMenus = !settings.value.menuBarVisible
+            || panel?.hasPresentedWindow == true
+            || auxiliaryWindowOpen
+            || isPresentingAuxiliaryWindow
+            || panelModel.isCopying
+        let policy: NSApplication.ActivationPolicy = needsAppMenus ? .regular : .accessory
+        if NSApp.activationPolicy() != policy {
+            NSApp.setActivationPolicy(policy)
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        updateActivationPolicy(excluding: window)
+        if !isPresentingAuxiliaryWindow,
+           panel?.hasPresentedWindow != true {
+            auxiliaryPasteDestination = nil
+        }
+    }
+
     @objc private func quitFromMenu() { NSApp.terminate(nil) }
     @objc private func confirmClearUnpinnedFromMenu() { confirmClearHistory(keepingPinned: true) }
 
@@ -528,4 +691,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         clearHistory(keepingPinned: keepingPinned)
     }
+}
+
+
+/// The app artwork's clipboard, three snippets, and offset sheet reduced to a
+/// transparent template glyph. macOS supplies contrast and highlight colors.
+@MainActor
+enum ClipboardStatusIcon {
+    static let image: NSImage = {
+        let image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { _ in
+            NSColor.black.setStroke()
+            NSColor.black.setFill()
+            let sheet = NSBezierPath()
+            sheet.lineWidth = 1.5
+            sheet.lineCapStyle = .round
+            sheet.lineJoinStyle = .round
+            sheet.move(to: NSPoint(x: 16.5, y: 14.5))
+            sheet.line(to: NSPoint(x: 17, y: 14))
+            sheet.line(to: NSPoint(x: 17, y: 3))
+            sheet.curve(to: NSPoint(x: 15.5, y: 1.5), controlPoint1: NSPoint(x: 17, y: 2), controlPoint2: NSPoint(x: 16.5, y: 1.5))
+            sheet.line(to: NSPoint(x: 7.5, y: 1.5))
+            sheet.stroke()
+
+            let board = NSBezierPath(roundedRect: NSRect(x: 3, y: 4, width: 11.5, height: 12.5), xRadius: 1.6, yRadius: 1.6)
+            board.lineWidth = 1.5
+            board.stroke()
+            NSBezierPath(roundedRect: NSRect(x: 6, y: 15, width: 5.5, height: 3.5), xRadius: 1, yRadius: 1).fill()
+            for y in [11.5, 9.0, 6.5] {
+                let line = NSBezierPath()
+                line.lineWidth = 1.35
+                line.lineCapStyle = .round
+                line.move(to: NSPoint(x: 5.8, y: y))
+                line.line(to: NSPoint(x: 11.7, y: y))
+                line.stroke()
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "Clipboard Manager"
+        return image
+    }()
 }

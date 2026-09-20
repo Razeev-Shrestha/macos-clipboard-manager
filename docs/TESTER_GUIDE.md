@@ -1,6 +1,6 @@
 # Clipboard Manager trusted tester guide
 
-This guide is for the locally packaged `ClipboardManager.app`. It is a native
+This guide is for the locally packaged `Clipboard Manager.app`. It is a native
 macOS 26 Tahoe application that keeps clipboard history in local Application
 Support storage. The app has no server or telemetry dependency.
 
@@ -32,10 +32,19 @@ the app. Set `PACKAGE_ARCHS=arm64` or `PACKAGE_ARCHS=x86_64` only when testing
 one architecture explicitly.
 
 To run the packaged app, extract the ZIP and open the resulting
-`ClipboardManager.app` in Finder. The app normally remains available from the
+`Clipboard Manager.app` in Finder. The app normally remains available from the
 menu bar; the default panel shortcut is **Command-Shift-V**. The menu bar menu
 also has **Open Clipboard**, **Pause/Resume Recording**, **Clear Unpinned
-History**, **Settings**, and **Quit Clipboard Manager**.
+History**, **Settings**, **Clipboard Manager Help**, and **Quit Clipboard Manager**.
+The status icon is a transparent monochrome clipboard. Opening a window also
+shows the normal macOS app menus; closing all windows returns to the menu-bar
+utility (unless the menu icon is hidden).
+
+Open **Settings** with **Command-Comma**. Use **← Clipboard** to return to
+history, preserving the previous paste destination. The Settings section picker
+should show its selected segment without an extra blue rectangle around the
+entire control, and Left/Right arrows should still change sections. Open
+**Help > Clipboard Manager Help** for keyboard and privacy guidance.
 
 If macOS warns that the app is from an unidentified developer, first confirm
 that the ZIP and checksum came from the expected tester build. After trying to
