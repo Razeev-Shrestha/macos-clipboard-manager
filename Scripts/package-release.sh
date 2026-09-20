@@ -59,9 +59,12 @@ build_log="$run_directory/xcodebuild-release.log"
 validation_log="$run_directory/validation.log"
 signature_log="$run_directory/codesign-details.log"
 metadata_file="$run_directory/BUILD-METADATA.txt"
-app_destination="$run_directory/ClipboardManager.app"
+app_destination="$run_directory/Clipboard Manager.app"
 archive_path="$run_directory/ClipboardManager-Release-${run_stamp}.zip"
+dmg_path="$run_directory/ClipboardManager-Release-${run_stamp}.dmg"
 extracted_directory="$run_directory/Extracted"
+dmg_source_directory="$run_directory/DMG-Source"
+dmg_mountpoint="$run_directory/DMG-Mount"
 checksums_file="$run_directory/SHA256SUMS.txt"
 
 git_revision="$(git -C "$repository_root" rev-parse HEAD 2>/dev/null || printf 'unavailable')"
@@ -117,7 +120,7 @@ printf 'package-release: building Release app with ad-hoc signing\n'
         build
 } 2>&1 | tee "$build_log"
 
-built_app="$derived_data/Build/Products/$configuration/ClipboardManager.app"
+built_app="$derived_data/Build/Products/$configuration/Clipboard Manager.app"
 [[ -d "$built_app" ]] || fail "Release build did not produce $built_app"
 [[ ! -e "$app_destination" ]] || fail "package destination already exists: $app_destination"
 ditto "$built_app" "$app_destination"
@@ -127,8 +130,9 @@ lipo_path="$(command -v lipo || true)"
 plutil_path="$(command -v plutil || true)"
 strings_path="$(command -v strings || true)"
 ditto_path="$(command -v ditto || true)"
+hdiutil_path="$(command -v hdiutil || true)"
 shasum_path="$(command -v shasum || true)"
-for required_tool in codesign_path lipo_path plutil_path strings_path ditto_path shasum_path; do
+for required_tool in codesign_path lipo_path plutil_path strings_path ditto_path hdiutil_path shasum_path; do
     [[ -n "${!required_tool}" ]] || fail "required packaging tool is unavailable: ${required_tool%_path}"
 done
 
@@ -167,6 +171,8 @@ verify_app() {
     fi
 
     [[ "$bundle_identifier" == 'com.example.ClipboardManager' ]] || fail "$app_label bundle identifier is unexpected: $bundle_identifier"
+    [[ "$(plist_value CFBundleDisplayName "$plist_path")" == 'Clipboard Manager' ]] || fail "$app_label display name is incorrect"
+    [[ "$(plist_value CFBundleName "$plist_path")" == 'Clipboard Manager' ]] || fail "$app_label bundle name is incorrect"
     [[ "$package_type" == 'APPL' ]] || fail "$app_label bundle type is unexpected: $package_type"
     [[ -n "$executable_name" ]] || fail "$app_label has no executable name"
     [[ "$icon_name" == 'AppIcon' ]] || fail "$app_label primary app icon name is unexpected: $icon_name"
@@ -219,11 +225,33 @@ mkdir "$extracted_directory"
 [[ ! -e "$archive_path" ]] || fail "archive destination already exists: $archive_path"
 "$ditto_path" -c -k --sequesterRsrc --keepParent "$app_destination" "$archive_path"
 "$ditto_path" -x -k "$archive_path" "$extracted_directory"
-extracted_app="$extracted_directory/ClipboardManager.app"
+extracted_app="$extracted_directory/Clipboard Manager.app"
 verify_app "$extracted_app" 'extracted'
+
+printf 'package-release: creating DMG image\n'
+mkdir "$dmg_source_directory"
+ln -s /Applications "$dmg_source_directory/Applications"
+ditto "$app_destination" "$dmg_source_directory/Clipboard Manager.app"
+[[ ! -e "$dmg_path" ]] || fail "DMG destination already exists: $dmg_path"
+"$hdiutil_path" create \
+    -volname 'Clipboard Manager' \
+    -srcfolder "$dmg_source_directory" \
+    -ov \
+    -format UDZO \
+    "$dmg_path" >> "$validation_log" 2>&1
+
+mkdir "$dmg_mountpoint"
+"$hdiutil_path" attach "$dmg_path" \
+    -nobrowse \
+    -readonly \
+    -mountpoint "$dmg_mountpoint" >> "$validation_log" 2>&1
+verify_app "$dmg_mountpoint/Clipboard Manager.app" 'DMG'
+"$hdiutil_path" detach "$dmg_mountpoint" >> "$validation_log" 2>&1
+rmdir "$dmg_mountpoint"
 
 binary_path="$app_destination/Contents/MacOS/$(plist_value CFBundleExecutable "$app_destination/Contents/Info.plist")"
 archive_digest="$("$shasum_path" -a 256 "$archive_path" | awk '{print $1}')"
+dmg_digest="$("$shasum_path" -a 256 "$dmg_path" | awk '{print $1}')"
 binary_digest="$("$shasum_path" -a 256 "$binary_path" | awk '{print $1}')"
 
 {
@@ -253,6 +281,8 @@ binary_digest="$("$shasum_path" -a 256 "$binary_path" | awk '{print $1}')"
     printf '%s\n' "signature=ad-hoc"
     printf '%s\n' "archive=$(basename "$archive_path")"
     printf '%s\n' "archive_sha256=$archive_digest"
+    printf '%s\n' "dmg=$(basename "$dmg_path")"
+    printf '%s\n' "dmg_sha256=$dmg_digest"
     printf '%s\n' "executable_sha256=$binary_digest"
     printf '%s\n' "swift_test_log=$(basename "$test_log")"
     printf '%s\n' "release_build_log=$(basename "$build_log")"
@@ -262,12 +292,14 @@ binary_digest="$("$shasum_path" -a 256 "$binary_path" | awk '{print $1}')"
 
 {
     printf '%s  %s\n' "$archive_digest" "$(basename "$archive_path")"
+    printf '%s  %s\n' "$dmg_digest" "$(basename "$dmg_path")"
     printf '%s  %s\n' "$binary_digest" "$(basename "$app_destination")/Contents/MacOS/ClipboardManager"
 } > "$checksums_file"
 
-printf 'package-release: verified app, extracted archive, ad-hoc signature, and requested architectures\n'
+printf 'package-release: verified app, extracted archive, DMG, ad-hoc signature, and requested architectures\n'
 printf 'package-release: Swift WAE log: %s\n' "$test_log"
 printf 'package-release: Release build log: %s\n' "$build_log"
 printf 'package-release: ZIP: %s\n' "$archive_path"
+printf 'package-release: DMG: %s\n' "$dmg_path"
 printf 'package-release: checksums: %s\n' "$checksums_file"
 printf 'package-release: metadata: %s\n' "$metadata_file"

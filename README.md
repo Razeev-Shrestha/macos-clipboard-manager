@@ -5,18 +5,28 @@ uses Swift 6, SwiftUI, and native macOS frameworks only.
 
 ## Full V1 functionality
 
-Gates A–F are implemented and independently reviewed. All 145 tests pass with Swift warnings
+Gates A–F are implemented and independently reviewed. All 161 tests pass with Swift warnings
 treated as errors, and clean Debug and universal Release builds pass. The app is packaged for
-trusted testers with native Liquid Glass chrome and readable clipboard content. See the precise
+public early access with native Liquid Glass chrome and readable clipboard content. See the precise
 [validation evidence and native-environment limits](docs/STATUS.md).
 
-Build a verified `.app` and ZIP with `Scripts/package-release.sh`. The package supports Apple silicon
+Build a verified `.app`, ZIP, and DMG with `Scripts/package-release.sh`. The package supports Apple silicon
 and Intel, is locally ad-hoc signed, and is not notarized. Follow the [tester guide](docs/TESTER_GUIDE.md)
 for installation, permissions and keyboard checks. [Performance measurements](docs/PERFORMANCE.md)
 include 1,000-item history, search, large payloads and native idle CPU/memory.
 
+## Download
+
+Download the latest public early-access DMG from the [GitHub release](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases/latest/download/ClipboardManager.dmg).
+This build is ad-hoc signed and not notarized. macOS may require you to approve the first launch
+through Finder or System Settings.
+
+Version tags beginning with `v` build and publish the DMG through GitHub Actions. Manual workflow
+runs upload the DMG as a workflow artifact without creating a public release.
+
 The bundled app icon uses Apple's native Icon Composer format for macOS 26
-appearance modes and Retina sizes. The menu-bar icon uses a monochrome SF Symbol.
+appearance modes and Retina sizes. The menu-bar icon uses a transparent monochrome
+template of the same clipboard design.
 See [icon artwork, provenance, and editing instructions](docs/ICON_DESIGN.md).
 
 The app stores accepted text, URLs, practical rich text, images, and ordered file/folder references in local SQLite history at
@@ -53,9 +63,10 @@ Choosing Paste or Enable Accessibility may show the macOS permission prompt.
 The app remains useful without this permission. Posting a paste request does
 not guarantee that the destination accepts it.
 
-The menu-bar item provides Open Clipboard, Pause/Resume, Clear History, Settings and Quit.
-Settings include a configurable shortcut, native launch at login, menu-bar visibility, retention,
-recording pause, and excluded bundle identifiers. Hiding the menu icon enables a Dock fallback.
+The menu-bar item provides Open Clipboard, Pause/Resume, Clear History, Settings, Help and Quit.
+Normal macOS application menus appear while Clipboard, Settings, or Help is open.
+Open Settings from the panel’s gear button or `⌘ ,`; use **← Clipboard** to return to history. Settings include a configurable shortcut, native launch at login, menu-bar visibility, retention count and age,
+recording pause, appearance and tab animation controls, and excluded bundle identifiers. Hiding the menu icon enables a Dock fallback.
 `⌘P` pins or unpins the selection. `⌘Delete` and preview Delete request confirmation; clearing
 can retain pins or remove all history. Default retention keeps at most 1,000 unpinned items for
 30 days. Concealed/transient content and excluded sources are checked before normal payload reads.
