@@ -475,7 +475,7 @@ struct ClipboardPanelView: View {
         guard let id else {
             return
         }
-        proxy.scrollTo(id, anchor: .center)
+        proxy.scrollTo(id)
     }
 
     private var footer: some View {
