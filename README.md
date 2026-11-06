@@ -19,12 +19,31 @@ include 1,000-item history, search, large payloads and native idle CPU/memory.
 
 ## Download
 
-Download the latest public early-access DMG from the [GitHub release](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases/latest/download/ClipboardManager.dmg).
-Unless the release was built with Developer ID signing (see [docs/SIGNING.md](docs/SIGNING.md)), it is ad-hoc signed and not notarized. macOS may require you to approve the first launch
-through Finder or System Settings.
+**[Download Clipboard Manager (DMG)](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases/latest/download/ClipboardManager.dmg)**
+· [all releases](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases) · requires macOS 26 · Apple silicon and Intel
 
-Version tags beginning with `v` build and publish the DMG through GitHub Actions. Manual workflow
-runs upload the DMG as a workflow artifact without creating a public release.
+1. Open `ClipboardManager.dmg` and drag **Clipboard Manager** to **Applications**.
+2. The release is code-signed but not notarized, so the first launch shows a "could not verify" warning.
+   Open **System Settings › Privacy & Security**, scroll to Security and click **Open Anyway**.
+3. For automatic paste, allow Clipboard Manager in **System Settings › Privacy & Security › Accessibility**.
+
+To check the download, compare `shasum -a 256 ClipboardManager.dmg` with the `ClipboardManager.dmg.sha256`
+file attached to the release.
+
+### Publishing a release
+
+Releases are built locally, so the published DMG carries the team signature:
+
+```sh
+SIGNING_MODE=development Scripts/package-release.sh      # or developer-id, see docs/SIGNING.md
+cp build/Distribution/<run>/ClipboardManager-Release-*.dmg ClipboardManager.dmg
+shasum -a 256 ClipboardManager.dmg > ClipboardManager.dmg.sha256
+gh release create vX.Y.Z ClipboardManager.dmg ClipboardManager.dmg.sha256 --title "Clipboard Manager vX.Y.Z"
+```
+
+The download link above always serves the newest release's `ClipboardManager.dmg`. Pushing a `v*` tag
+also runs GitHub Actions, which never replaces a DMG already attached to the release; without one it
+publishes an ad-hoc build. Manual workflow runs only produce a workflow artifact.
 
 The bundled app icon uses Apple's native Icon Composer format for macOS 26
 appearance modes and Retina sizes. The menu-bar icon uses a transparent monochrome

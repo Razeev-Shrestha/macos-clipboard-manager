@@ -116,11 +116,17 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A DMG already attached to the release (for example a locally built,
+            # team-signed one) is authoritative; never replace it with this build.
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' | grep -qx 'ClipboardManager.dmg'; then
+              echo "Release already has ClipboardManager.dmg; keeping it. This build is in the workflow artifact."
+              exit 0
+            fi
             gh release upload "$GITHUB_REF_NAME" \
               ClipboardManager.dmg \
               ClipboardManager.dmg.sha256 \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
+              --repo "$GITHUB_REPOSITORY"
           else
             gh release create "$GITHUB_REF_NAME" \
               ClipboardManager.dmg \
