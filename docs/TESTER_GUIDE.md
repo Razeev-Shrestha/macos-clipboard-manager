@@ -12,8 +12,9 @@ Support storage. The app has no server or telemetry dependency.
 - Use a copy of the ZIP and keep the accompanying `SHA256SUMS.txt` and
   `BUILD-METADATA.txt` files with it. The metadata records the exact source
   revision, dirty state, SDK, architectures, and signing mode.
-- This package is locally ad-hoc signed. It is not Developer ID signed,
-  notarized, or suitable for public distribution.
+- The default package is locally ad-hoc signed. Team-signed (`SIGNING_MODE=development`)
+  and Developer ID + notarized (`SIGNING_MODE=developer-id`) builds are described in
+  [SIGNING.md](SIGNING.md).
 
 ## Build and run from a checkout
 

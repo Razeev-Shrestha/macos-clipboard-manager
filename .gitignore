@@ -11,3 +11,6 @@ xcuserdata/
 .build/
 .swiftpm/
 Packages/
+
+# Local signing identity (team-specific)
+Config/Signing.local.xcconfig

@@ -1,0 +1,16 @@
+// Copy to Config/Signing.local.xcconfig (gitignored) and edit.
+//
+// Team ID: Xcode > Settings > Accounts, or `security find-identity -v -p codesigning`
+// (the value in parentheses after the certificate name is NOT always the team
+// ID; check developer.apple.com > Membership if unsure).
+DEVELOPMENT_TEAM = YOURTEAMID
+
+// "Apple Development" is fine for running on your own Macs: it gives the app a
+// stable identity so Accessibility permission survives rebuilds.
+// Use "Developer ID Application" for builds you hand to other Macs (requires a
+// Developer ID certificate, created by the team's Account Holder).
+CODE_SIGN_IDENTITY = Apple Development
+
+// Optional: a real reverse-DNS bundle identifier. History storage does not move
+// when this changes; settings are migrated automatically on first launch.
+// APP_BUNDLE_IDENTIFIER = com.yourcompany.ClipboardManager

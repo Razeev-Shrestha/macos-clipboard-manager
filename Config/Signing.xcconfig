@@ -1,0 +1,22 @@
+// Code-signing and identity settings for the Clipboard Manager app target.
+//
+// The committed defaults produce an ad-hoc ("Sign to Run Locally") build so the
+// project builds on any Mac and in CI without an Apple Developer account.
+//
+// To sign with your team, copy Signing.local.xcconfig.example to
+// Signing.local.xcconfig (gitignored) and fill in your Team ID. See
+// docs/SIGNING.md for Apple Development, Developer ID and notarization.
+
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+APP_BUNDLE_IDENTIFIER = com.example.ClipboardManager
+
+// Hardened runtime is required for notarization. No entitlements are needed:
+// the app is not sandboxed and Accessibility is granted through TCC, not an
+// entitlement.
+ENABLE_HARDENED_RUNTIME = YES
+CODE_SIGN_INJECT_BASE_ENTITLEMENTS[config=Release] = NO
+OTHER_CODE_SIGN_FLAGS[config=Release] = $(inherited) --timestamp
+
+#include? "Signing.local.xcconfig"

@@ -2,14 +2,30 @@
 
 set -euo pipefail
 
-# Build and package the local, ad-hoc signed Release app for trusted testers.
+# Build, sign, verify and package the Release app.
 #
 # Usage:
-#   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-#     Scripts/package-release.sh
+#   Scripts/package-release.sh                                  # ad-hoc (default)
+#   SIGNING_MODE=development Scripts/package-release.sh          # Apple Development
+#   SIGNING_MODE=developer-id NOTARY_PROFILE=clipboard-notary \
+#     Scripts/package-release.sh                                 # Developer ID + notarize
+#
+# SIGNING_MODE
+#   adhoc         Locally ad-hoc signed. Works anywhere, no account required.
+#   development   Signed with "Apple Development" and the team from
+#                 Config/Signing.local.xcconfig (or DEVELOPMENT_TEAM). Stable identity
+#                 for your own registered Macs; Gatekeeper rejects it elsewhere.
+#   developer-id  Signed with "Developer ID Application" for distribution outside the
+#                 App Store. Notarized and stapled when notary credentials are given.
+#
+# Notary credentials (developer-id only; one of):
+#   NOTARY_PROFILE=<name>   keychain profile from `xcrun notarytool store-credentials`
+#   NOTARY_KEY_PATH, NOTARY_KEY_ID, NOTARY_ISSUER   App Store Connect API key (CI)
+# Set REQUIRE_NOTARIZATION=1 to fail instead of skipping when none are set.
 #
 # PACKAGE_ARCHS may be set to a space-separated subset of arm64 and x86_64.
-# The default asks Xcode for a universal app.
+# The default asks Xcode for a universal app. SIGNING_KEYCHAIN optionally names
+# the keychain holding the identity (used by CI).
 
 fail() {
     printf 'package-release: error: %s\n' "$*" >&2
@@ -23,6 +39,28 @@ scheme_name="ClipboardManager"
 configuration="Release"
 developer_directory="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 requested_architectures="${PACKAGE_ARCHS:-arm64 x86_64}"
+signing_mode="${SIGNING_MODE:-adhoc}"
+notary_profile="${NOTARY_PROFILE:-}"
+require_notarization="${REQUIRE_NOTARIZATION:-0}"
+
+case "$signing_mode" in
+    adhoc) signing_identity='-' ;;
+    development) signing_identity='Apple Development' ;;
+    developer-id) signing_identity='Developer ID Application' ;;
+    *) fail "SIGNING_MODE must be adhoc, development or developer-id (got: $signing_mode)" ;;
+esac
+
+notary_arguments=()
+if [[ "$signing_mode" == 'developer-id' ]]; then
+    if [[ -n "$notary_profile" ]]; then
+        notary_arguments=(--keychain-profile "$notary_profile")
+    elif [[ -n "${NOTARY_KEY_PATH:-}" && -n "${NOTARY_KEY_ID:-}" && -n "${NOTARY_ISSUER:-}" ]]; then
+        [[ -f "$NOTARY_KEY_PATH" ]] || fail "NOTARY_KEY_PATH does not name a file"
+        notary_arguments=(--key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER")
+    elif [[ "$require_notarization" == '1' ]]; then
+        fail "REQUIRE_NOTARIZATION=1 but neither NOTARY_PROFILE nor NOTARY_KEY_PATH/NOTARY_KEY_ID/NOTARY_ISSUER is set"
+    fi
+fi
 
 [[ -d "$project_path" ]] || fail "missing ClipboardManager.xcodeproj"
 [[ -d "$developer_directory" ]] || fail "DEVELOPER_DIR does not name an Xcode developer directory: $developer_directory"
@@ -92,7 +130,36 @@ printf 'package-release: running Swift tests with warnings as errors\n'
         -Xswiftc -warnings-as-errors
 } 2>&1 | tee "$test_log"
 
-printf 'package-release: building Release app with ad-hoc signing\n'
+signing_overrides=(CODE_SIGN_STYLE=Manual "CODE_SIGN_IDENTITY=$signing_identity")
+if [[ "$signing_mode" == 'adhoc' ]]; then
+    signing_overrides+=(DEVELOPMENT_TEAM='' AD_HOC_CODE_SIGNING_ALLOWED=YES)
+elif [[ -n "${DEVELOPMENT_TEAM:-}" ]]; then
+    signing_overrides+=("DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM")
+fi
+if [[ -n "${SIGNING_KEYCHAIN:-}" ]]; then
+    signing_overrides+=("OTHER_CODE_SIGN_FLAGS=--timestamp --keychain $SIGNING_KEYCHAIN")
+fi
+
+# Resolve the bundle identifier and team the build will use, so verification
+# follows Config/Signing*.xcconfig instead of a hard-coded value.
+resolved_settings="$(DEVELOPER_DIR="$developer_directory" "$xcodebuild_path" \
+    -project "$project_path" -scheme "$scheme_name" -configuration "$configuration" \
+    -showBuildSettings "${signing_overrides[@]}" 2>/dev/null)"
+build_setting() {
+    printf '%s\n' "$resolved_settings" | sed -n "s/^ *$1 = //p" | head -n 1
+}
+expected_bundle_identifier="$(build_setting PRODUCT_BUNDLE_IDENTIFIER)"
+expected_team="$(build_setting DEVELOPMENT_TEAM)"
+[[ -n "$expected_bundle_identifier" ]] || fail "unable to resolve PRODUCT_BUNDLE_IDENTIFIER"
+if [[ "$signing_mode" != 'adhoc' ]]; then
+    [[ -n "$expected_team" ]] || fail "SIGNING_MODE=$signing_mode needs DEVELOPMENT_TEAM (set it in Config/Signing.local.xcconfig or the environment)"
+    # Command-line identity overrides reach the local Swift package target too,
+    # which does not read the app's xcconfig, so pass the resolved team globally.
+    signing_overrides+=("DEVELOPMENT_TEAM=$expected_team")
+fi
+
+printf 'package-release: building Release app (signing: %s, bundle: %s, team: %s)\n' \
+    "$signing_mode" "$expected_bundle_identifier" "${expected_team:-none}"
 
 {
     printf '%s\n' "DEVELOPER_DIR=$developer_directory"
@@ -111,10 +178,7 @@ printf 'package-release: building Release app with ad-hoc signing\n'
         SWIFT_ACTIVE_COMPILATION_CONDITIONS='' \
         SWIFT_TREAT_WARNINGS_AS_ERRORS=YES \
         SWIFT_SUPPRESS_WARNINGS=NO \
-        CODE_SIGN_STYLE=Manual \
-        CODE_SIGN_IDENTITY=- \
-        DEVELOPMENT_TEAM='' \
-        AD_HOC_CODE_SIGNING_ALLOWED=YES \
+        "${signing_overrides[@]}" \
         CODE_SIGNING_ALLOWED=YES \
         CODE_SIGNING_REQUIRED=YES \
         build
@@ -170,7 +234,7 @@ verify_app() {
         fail "$app_label does not declare an app icon fallback file"
     fi
 
-    [[ "$bundle_identifier" == 'com.example.ClipboardManager' ]] || fail "$app_label bundle identifier is unexpected: $bundle_identifier"
+    [[ "$bundle_identifier" == "$expected_bundle_identifier" ]] || fail "$app_label bundle identifier is unexpected: $bundle_identifier"
     [[ "$(plist_value CFBundleDisplayName "$plist_path")" == 'Clipboard Manager' ]] || fail "$app_label display name is incorrect"
     [[ "$(plist_value CFBundleName "$plist_path")" == 'Clipboard Manager' ]] || fail "$app_label bundle name is incorrect"
     [[ "$package_type" == 'APPL' ]] || fail "$app_label bundle type is unexpected: $package_type"
@@ -186,11 +250,33 @@ verify_app() {
     if ! "$codesign_path" --verify --deep --strict --verbose=2 "$app_path" >> "$validation_log" 2>&1; then
         fail "$app_label failed strict code-signature verification"
     fi
-    {
-        printf '%s\n' "[$app_label] $app_path"
-        "$codesign_path" --display --verbose=4 "$app_path" 2>&1
-    } >> "$signature_log"
-    grep -q '^Signature=adhoc$' "$signature_log" || fail "$app_label is not ad-hoc signed"
+    local signature_details
+    signature_details="$("$codesign_path" --display --verbose=4 "$app_path" 2>&1)"
+    printf '%s\n%s\n' "[$app_label] $app_path" "$signature_details" >> "$signature_log"
+    printf '%s\n' "$signature_details" | grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime' \
+        || fail "$app_label is not signed with the hardened runtime"
+    case "$signing_mode" in
+        adhoc)
+            printf '%s\n' "$signature_details" | grep -q '^Signature=adhoc$' \
+                || fail "$app_label is not ad-hoc signed"
+            ;;
+        development|developer-id)
+            local authority_prefix='Apple Development: '
+            [[ "$signing_mode" == 'developer-id' ]] && authority_prefix='Developer ID Application: '
+            printf '%s\n' "$signature_details" | grep -q "^Authority=${authority_prefix}" \
+                || fail "$app_label is not signed by an identity starting with '$authority_prefix'"
+            printf '%s\n' "$signature_details" | grep -qx "TeamIdentifier=$expected_team" \
+                || fail "$app_label is not signed by team $expected_team"
+            printf '%s\n' "$signature_details" | grep -q '^Timestamp=' \
+                || [[ "$signing_mode" == 'development' ]] \
+                || fail "$app_label signature has no secure timestamp (required for notarization)"
+            local entitlements
+            entitlements="$("$codesign_path" --display --entitlements - --xml "$app_path" 2>/dev/null || true)"
+            if printf '%s' "$entitlements" | grep -q 'com.apple.security.get-task-allow'; then
+                fail "$app_label carries the get-task-allow debugging entitlement"
+            fi
+            ;;
+    esac
 
     local architecture_info
     architecture_info="$("$lipo_path" -info "$executable_path" 2>&1)"
@@ -220,6 +306,40 @@ verify_app() {
 : > "$signature_log"
 verify_app "$app_destination" 'built'
 
+notarized='no'
+notarize() {
+    local artifact="$1"
+    local label="$2"
+    local submission_log="$run_directory/notary-${label}.json"
+    printf 'package-release: submitting %s for notarization (this can take several minutes)\n' "$label"
+    if ! xcrun notarytool submit "$artifact" "${notary_arguments[@]}" \
+        --wait --timeout 30m --output-format json > "$submission_log" 2>&1; then
+        cat "$submission_log" >&2
+        fail "notarization submission failed for $label"
+    fi
+    if ! grep -q '"status" *: *"Accepted"' "$submission_log"; then
+        local submission_id
+        submission_id="$(sed -n 's/.*"id" *: *"\([^"]*\)".*/\1/p' "$submission_log" | head -n 1)"
+        [[ -n "$submission_id" ]] && xcrun notarytool log "$submission_id" "${notary_arguments[@]}" >&2 || true
+        fail "Apple did not accept $label for notarization (see $submission_log)"
+    fi
+}
+
+if [[ "$signing_mode" == 'developer-id' && ${#notary_arguments[@]} -gt 0 ]]; then
+    notary_zip="$run_directory/notarize-app.zip"
+    "$ditto_path" -c -k --sequesterRsrc --keepParent "$app_destination" "$notary_zip"
+    notarize "$notary_zip" 'app'
+    rm -f "$notary_zip"
+    xcrun stapler staple "$app_destination" >> "$validation_log" 2>&1 || fail "unable to staple the app"
+    xcrun stapler validate "$app_destination" >> "$validation_log" 2>&1 || fail "stapled app ticket did not validate"
+    spctl --assess --type execute --verbose=4 "$app_destination" >> "$validation_log" 2>&1 \
+        || fail "Gatekeeper rejected the notarized app"
+    notarized='yes'
+    verify_app "$app_destination" 'stapled'
+elif [[ "$signing_mode" == 'developer-id' ]]; then
+    printf 'package-release: warning: no notary credentials; the Developer ID build is NOT notarized\n' >&2
+fi
+
 printf 'package-release: creating ZIP archive\n'
 mkdir "$extracted_directory"
 [[ ! -e "$archive_path" ]] || fail "archive destination already exists: $archive_path"
@@ -239,6 +359,33 @@ ditto "$app_destination" "$dmg_source_directory/Clipboard Manager.app"
     -ov \
     -format UDZO \
     "$dmg_path" >> "$validation_log" 2>&1
+
+if [[ "$signing_mode" != 'adhoc' ]]; then
+    # Sign with the exact certificate Xcode chose for the app. A keychain can hold
+    # several certificates with the same common name, which makes a name ambiguous.
+    certificate_prefix="$run_directory/app-certificate-"
+    "$codesign_path" --display --extract-certificates="$certificate_prefix" "$app_destination" > /dev/null 2>&1 \
+        || fail "unable to read the app's signing certificate"
+    dmg_signing_hash="$(openssl x509 -inform DER -in "${certificate_prefix}0" -noout -fingerprint -sha1 \
+        | sed 's/^.*=//; s/://g')"
+    rm -f "${certificate_prefix}"*
+    [[ -n "$dmg_signing_hash" ]] || fail "unable to fingerprint the app's signing certificate"
+    dmg_sign_arguments=(--force --sign "$dmg_signing_hash" --timestamp)
+    [[ -n "${SIGNING_KEYCHAIN:-}" ]] && dmg_sign_arguments+=(--keychain "$SIGNING_KEYCHAIN")
+    if [[ "$signing_mode" == 'developer-id' ]]; then
+        dmg_sign_arguments+=(--identifier "${expected_bundle_identifier}.dmg")
+    fi
+    "$codesign_path" "${dmg_sign_arguments[@]}" "$dmg_path" >> "$validation_log" 2>&1 \
+        || fail "unable to sign the DMG"
+    "$codesign_path" --verify --strict --verbose=2 "$dmg_path" >> "$validation_log" 2>&1 \
+        || fail "DMG signature did not verify"
+fi
+if [[ "$notarized" == 'yes' ]]; then
+    notarize "$dmg_path" 'dmg'
+    xcrun stapler staple "$dmg_path" >> "$validation_log" 2>&1 || fail "unable to staple the DMG"
+    spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg_path" \
+        >> "$validation_log" 2>&1 || fail "Gatekeeper rejected the notarized DMG"
+fi
 
 mkdir "$dmg_mountpoint"
 "$hdiutil_path" attach "$dmg_path" \
@@ -278,7 +425,9 @@ binary_digest="$("$shasum_path" -a 256 "$binary_path" | awk '{print $1}')"
     printf '%s\n' "bundle_identifier=$(plist_value CFBundleIdentifier "$app_destination/Contents/Info.plist")"
     printf '%s\n' "bundle_version=$(plist_value CFBundleShortVersionString "$app_destination/Contents/Info.plist")"
     printf '%s\n' "build_version=$(plist_value CFBundleVersion "$app_destination/Contents/Info.plist")"
-    printf '%s\n' "signature=ad-hoc"
+    printf '%s\n' "signature=$signing_mode"
+    printf '%s\n' "team=${expected_team:-none}"
+    printf '%s\n' "notarized=$notarized"
     printf '%s\n' "archive=$(basename "$archive_path")"
     printf '%s\n' "archive_sha256=$archive_digest"
     printf '%s\n' "dmg=$(basename "$dmg_path")"
@@ -296,7 +445,7 @@ binary_digest="$("$shasum_path" -a 256 "$binary_path" | awk '{print $1}')"
     printf '%s  %s\n' "$binary_digest" "$(basename "$app_destination")/Contents/MacOS/ClipboardManager"
 } > "$checksums_file"
 
-printf 'package-release: verified app, extracted archive, DMG, ad-hoc signature, and requested architectures\n'
+printf 'package-release: verified app, extracted archive, DMG, %s signature (notarized: %s), and requested architectures\n' "$signing_mode" "$notarized"
 printf 'package-release: Swift WAE log: %s\n' "$test_log"
 printf 'package-release: Release build log: %s\n' "$build_log"
 printf 'package-release: ZIP: %s\n' "$archive_path"
