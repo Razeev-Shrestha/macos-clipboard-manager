@@ -69,6 +69,8 @@ public final class ClipboardHistoryController: ObservableObject {
     private var isStarting = false
     private var isShuttingDown = false
     private var hasStorageFailure = false
+    /// When true, text that looks like a credential is not recorded.
+    public private(set) var ignoresLikelySecrets = true
 
     public convenience init(
         pasteboard: any ClipboardPasteboard,
@@ -175,6 +177,16 @@ public final class ClipboardHistoryController: ObservableObject {
         cancelStaleCaptureTasks()
     }
 
+    /// Lets items pasted or copied from history appear on the user's other Apple
+    /// devices via Universal Clipboard (Handoff). Off by default.
+    public func setSharesRestoredItemsWithOtherDevices(_ shares: Bool) {
+        monitor.setSharesWritesWithOtherDevices(shares)
+    }
+
+    public func setIgnoresLikelySecrets(_ ignores: Bool) {
+        ignoresLikelySecrets = ignores
+    }
+
     public func setExcludedBundleIdentifiers(_ identifiers: Set<String>) {
         monitor.setExcludedBundleIdentifiers(identifiers)
         cancelStaleCaptureTasks()
@@ -207,7 +219,7 @@ public final class ClipboardHistoryController: ObservableObject {
     /// receipt. The receipt is used by automatic paste to detect a clipboard
     /// replacement during focus restoration.
     @discardableResult
-    public func copyItemWithReceipt(id: UUID) async -> ClipboardRestoreReceipt? {
+    public func copyItemWithReceipt(id: UUID, plainTextOnly: Bool = false) async -> ClipboardRestoreReceipt? {
         guard hasOpenedRepository, storageState == .ready, !isShuttingDown, !hasStorageFailure, !Task.isCancelled else {
             return nil
         }
@@ -231,8 +243,16 @@ public final class ClipboardHistoryController: ObservableObject {
         }
 
         guard !isShuttingDown, !hasStorageFailure, !Task.isCancelled,
-              let item, item.payload != nil,
-              let receipt = monitor.restoreReceipt(item) else {
+              let item, let payload = item.payload else {
+            return nil
+        }
+        let receipt: ClipboardRestoreReceipt?
+        if plainTextOnly, let plainPayload = Self.plainTextPayload(for: item, payload: payload) {
+            receipt = monitor.restoreReceipt(plainPayload)
+        } else {
+            receipt = monitor.restoreReceipt(item)
+        }
+        guard let receipt else {
             return nil
         }
 
@@ -244,6 +264,26 @@ public final class ClipboardHistoryController: ObservableObject {
             self?.monitor.pruneRetention(now: actionDate)
         })
         return receipt
+    }
+
+    /// A single plain-text representation of an item, or nil when the item has
+    /// no text (images, files), in which case the full payload is restored.
+    nonisolated static func plainTextPayload(for item: ClipboardItem, payload: ClipboardPayload) -> ClipboardPayload? {
+        let text = payload.plainText
+            ?? payload.items?.compactMap(\.plainText).joined(separator: "\n")
+            ?? rtfText(in: payload)
+            ?? payload.url?.absoluteString
+        guard item.primaryType != .image, item.primaryType != .files,
+              let text, !text.isEmpty else {
+            return nil
+        }
+        let stringType = NSPasteboard.PasteboardType.string.rawValue
+        return ClipboardPayload(
+            primaryTypeIdentifier: stringType,
+            representations: [ClipboardRepresentation(typeIdentifier: stringType, data: Data(text.utf8))],
+            availableTypeIdentifiers: [stringType],
+            plainText: text
+        )
     }
 
     /// Returns whether the pasteboard still contains the exact verified write
@@ -385,6 +425,7 @@ public final class ClipboardHistoryController: ObservableObject {
         let repository = repository
         let monitor = monitor
         let token = UUID()
+        let ignoresLikelySecrets = ignoresLikelySecrets
         let task = Task { @MainActor [weak self] in
             defer {
                 self?.finishCaptureTask(token)
@@ -392,10 +433,13 @@ public final class ClipboardHistoryController: ObservableObject {
             do {
                 _ = await previousMutation?.value
                 try Task.checkCancellation()
-                let item = await Self.processCapture(
+                guard let item = await Self.processCapture(
                     candidate.snapshot.capture,
-                    capturedAt: candidate.capturedAt
-                )
+                    capturedAt: candidate.capturedAt,
+                    ignoringLikelySecrets: ignoresLikelySecrets
+                ) else {
+                    return false
+                }
                 try Task.checkCancellation()
                 guard let self,
                       self.monitor.currentCaptureGeneration == candidate.generation
@@ -551,18 +595,36 @@ public final class ClipboardHistoryController: ObservableObject {
         storageState = .failed
     }
 
+    /// Returns nil when the capture should not enter history (likely secret).
     private nonisolated static func processCapture(
         _ capture: ClipboardCapture,
-        capturedAt: Date
-    ) async -> ClipboardItem {
+        capturedAt: Date,
+        ignoringLikelySecrets: Bool
+    ) async -> ClipboardItem? {
         await Task.detached(priority: .utility) {
             let enrichedCapture = enrichCapture(capture)
+            if ignoringLikelySecrets, isLikelySecret(enrichedCapture) {
+                return nil
+            }
             return ClipboardItem(
                 capture: enrichedCapture,
                 createdAt: capturedAt,
                 lastUsedAt: capturedAt
             )
         }.value
+    }
+
+    private nonisolated static func isLikelySecret(_ capture: ClipboardCapture) -> Bool {
+        switch capture.primaryType {
+        case .image, .files:
+            return false
+        case .text, .code, .url, .richText, .other:
+            break
+        }
+        // Searchable text includes text derived from rich text and URLs.
+        let texts = [capture.payload.plainText, capture.searchableText]
+            + (capture.payload.items ?? []).map(\.plainText)
+        return texts.compactMap { $0 }.contains(where: ClipboardSecretDetector.isLikelySecret)
     }
 
     private nonisolated static func enrichCapture(_ capture: ClipboardCapture) -> ClipboardCapture {

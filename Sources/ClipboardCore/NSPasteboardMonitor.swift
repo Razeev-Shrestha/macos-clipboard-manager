@@ -146,6 +146,11 @@ public final class NSPasteboardMonitor: NSObject {
         rebaseline()
     }
 
+    /// Restoring never captures, so this needs no capture invalidation.
+    public func setSharesWritesWithOtherDevices(_ shares: Bool) {
+        pasteboard.setSharesWritesWithOtherDevices(shares)
+    }
+
     /// Called after a sleep/wake transition. Re-baselining avoids catching up writes
     /// made while the utility was asleep, including writes made while paused.
     public func handleSleep() {

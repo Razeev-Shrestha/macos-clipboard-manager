@@ -1,5 +1,7 @@
+import AppKit
 import ClipboardCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ClipboardSettingsView: View {
     let delegate: AppDelegate
@@ -253,12 +255,48 @@ struct ClipboardSettingsView: View {
             Section {
                 Toggle("Pause clipboard recording", isOn: Binding(
                     get: { settings.value.recordingPaused },
-                    set: { isPaused in settings.update { $0.recordingPaused = isPaused } }
+                    set: { isPaused in
+                        settings.update { isPaused ? $0.pauseRecording() : $0.resumeRecording() }
+                    }
                 ))
+                if settings.value.recordingPaused, let resumeDate = settings.value.recordingResumeDate {
+                    LabeledContent("Resumes automatically") {
+                        Text(resumeDate, style: .time)
+                    }
+                } else if !settings.value.recordingPaused {
+                    HStack {
+                        Text("Pause temporarily")
+                        Spacer()
+                        Button("15 Minutes") { settings.update { $0.pauseRecording(until: Date().addingTimeInterval(15 * 60)) } }
+                        Button("1 Hour") { settings.update { $0.pauseRecording(until: Date().addingTimeInterval(60 * 60)) } }
+                    }
+                }
             } header: {
                 Text("Recording")
             } footer: {
                 Text("Clipboard history stays on this Mac. Pausing stops new captures; existing history remains available.")
+            }
+
+            Section {
+                Toggle("Skip passwords, API keys and card numbers", isOn: Binding(
+                    get: { settings.value.ignoresLikelySecrets },
+                    set: { ignores in settings.update { $0.ignoresLikelySecrets = ignores } }
+                ))
+            } header: {
+                Text("Sensitive content")
+            } footer: {
+                Text("Copied text that looks like a private key, access token, API key or payment card number is not saved to history. It can still be pasted normally.")
+            }
+
+            Section {
+                Toggle("Share pasted items with my other devices", isOn: Binding(
+                    get: { settings.value.sharesRestoredItemsWithOtherDevices },
+                    set: { shares in settings.update { $0.sharesRestoredItemsWithOtherDevices = shares } }
+                ))
+            } header: {
+                Text("Universal Clipboard")
+            } footer: {
+                Text("When on, an item you paste or copy from history can also be pasted on your iPhone, iPad or other Macs signed in to the same Apple Account with Handoff enabled. History itself stays on this Mac. Text copied on your other devices is recorded here either way.")
             }
 
             Section {
@@ -268,6 +306,7 @@ struct ClipboardSettingsView: View {
                         .onSubmit(addExcludedBundleIdentifier)
                     Button("Add", action: addExcludedBundleIdentifier)
                         .disabled(excludedBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Choose App…", action: chooseExcludedApplication)
                 }
                 if settings.value.excludedBundleIdentifiers.isEmpty {
                     Text("No excluded apps")
@@ -275,8 +314,7 @@ struct ClipboardSettingsView: View {
                 }
                 ForEach(settings.value.excludedBundleIdentifiers.sorted(), id: \.self) { identifier in
                     HStack {
-                        Text(identifier)
-                            .textSelection(.enabled)
+                        ExcludedApplicationLabel(bundleIdentifier: identifier)
                         Spacer()
                         Button("Remove", role: .destructive) {
                             settings.update { $0.excludedBundleIdentifiers.remove(identifier) }
@@ -364,6 +402,21 @@ struct ClipboardSettingsView: View {
         guard !identifier.isEmpty else { return }
         settings.update { $0.excludedBundleIdentifiers.insert(identifier) }
         excludedBundleIdentifier = ""
+    }
+
+    /// Lets the user pick an app instead of typing its bundle identifier.
+    private func chooseExcludedApplication() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Apps to Exclude"
+        panel.prompt = "Exclude"
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        guard panel.runModal() == .OK else { return }
+        let identifiers = panel.urls.compactMap { Bundle(url: $0)?.bundleIdentifier }
+        guard !identifiers.isEmpty else { return }
+        settings.update { $0.excludedBundleIdentifiers.formUnion(identifiers) }
     }
 
     private var launchStatusText: String {
@@ -506,6 +559,38 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
         case .general: "gearshape"
         case .privacy: "hand.raised"
         case .permissions: "checkmark.shield"
+        }
+    }
+}
+
+/// An excluded bundle identifier shown with its app icon and name when the app
+/// is installed, falling back to the raw identifier.
+private struct ExcludedApplicationLabel: View {
+    let bundleIdentifier: String
+
+    var body: some View {
+        let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+        HStack(spacing: 8) {
+            if let applicationURL {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: applicationURL.path))
+                    .resizable()
+                    .frame(width: 20, height: 20)
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: "app.dashed")
+                    .frame(width: 20, height: 20)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(applicationURL.map { FileManager.default.displayName(atPath: $0.path) } ?? bundleIdentifier)
+                if applicationURL != nil {
+                    Text(bundleIdentifier)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
         }
     }
 }

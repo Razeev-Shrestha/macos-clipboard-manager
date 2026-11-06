@@ -157,6 +157,7 @@ public final class ClipboardPanelViewModel: ObservableObject {
     public func handleKeyDown(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let isCommand = modifiers == [.command]
+        let isOption = modifiers == [.option]
 
         // Let a focused native control consume activation/navigation keys.
         // Explicit row selection can reclaim list actions even if AppKit keeps
@@ -210,16 +211,14 @@ public final class ClipboardPanelViewModel: ObservableObject {
             return true
         }
 
-        if (modifiers.isEmpty || isCommand),
+        if (modifiers.isEmpty || isCommand || isOption),
            (event.keyCode == 36 || event.keyCode == 76),
            !event.isARepeat {
             guard hasCurrentResults, let selectedID else {
                 return true
             }
-            beginAction(
-                id: selectedID,
-                intent: modifiers.isEmpty ? .paste : .copyOnly
-            )
+            let intent: ClipboardPasteIntent = isCommand ? .copyOnly : (isOption ? .pastePlainText : .paste)
+            beginAction(id: selectedID, intent: intent)
             return true
         }
 
@@ -253,6 +252,13 @@ public final class ClipboardPanelViewModel: ObservableObject {
             return
         }
         beginAction(id: selectedID, intent: .paste)
+    }
+
+    public func pastePlainTextSelected() {
+        guard hasCurrentResults, let selectedID else {
+            return
+        }
+        beginAction(id: selectedID, intent: .pastePlainText)
     }
 
     public func togglePinSelected() {

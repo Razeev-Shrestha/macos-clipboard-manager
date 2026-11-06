@@ -22,14 +22,27 @@ struct ClipboardBlobStore {
             // The explicit unique temp name is the only staging path. Avoid
             // Data.write(.atomic), which may create an implementation-defined
             // sibling temp file that startup cleanup cannot identify.
-            try data.write(to: temporary, options: [.withoutOverwriting])
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+            try Self.writeOwnerOnly(data, to: temporary)
             try FileManager.default.moveItem(at: temporary, to: destination)
             return reference
         } catch {
             try? FileManager.default.removeItem(at: temporary)
             throw ClipboardBlobStoreError.writeFailed
         }
+    }
+
+    /// Creates the file exclusively with mode 0600 from the first byte, so blob
+    /// contents are never briefly readable through the process umask, and refuses
+    /// to follow a symbolic link planted at the staging path.
+    private static func writeOwnerOnly(_ data: Data, to url: URL) throws {
+        let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else {
+            throw ClipboardBlobStoreError.writeFailed
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        try handle.write(contentsOf: data)
+        try handle.synchronize()
+        try handle.close()
     }
 
     func read(_ reference: String) throws -> Data {
@@ -80,6 +93,7 @@ struct ClipboardBlobStore {
             guard rootIsDirectory else {
                 throw ClipboardBlobStoreError.writeFailed
             }
+            try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rootURL.path)
             return
         }
         do {

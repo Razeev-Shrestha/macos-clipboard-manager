@@ -11,14 +11,16 @@ public early access with native Liquid Glass chrome and readable clipboard conte
 [validation evidence and native-environment limits](docs/STATUS.md).
 
 Build a verified `.app`, ZIP, and DMG with `Scripts/package-release.sh`. The package supports Apple silicon
-and Intel, is locally ad-hoc signed, and is not notarized. Follow the [tester guide](docs/TESTER_GUIDE.md)
+and Intel. It is ad-hoc signed by default; set `SIGNING_MODE=development` to sign with your Apple
+Developer team, or `SIGNING_MODE=developer-id` to sign with Developer ID and notarize for distribution
+outside the App Store. See [signing and distribution](docs/SIGNING.md). Follow the [tester guide](docs/TESTER_GUIDE.md)
 for installation, permissions and keyboard checks. [Performance measurements](docs/PERFORMANCE.md)
 include 1,000-item history, search, large payloads and native idle CPU/memory.
 
 ## Download
 
 Download the latest public early-access DMG from the [GitHub release](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases/latest/download/ClipboardManager.dmg).
-This build is ad-hoc signed and not notarized. macOS may require you to approve the first launch
+Unless the release was built with Developer ID signing (see [docs/SIGNING.md](docs/SIGNING.md)), it is ad-hoc signed and not notarized. macOS may require you to approve the first launch
 through Finder or System Settings.
 
 Version tags beginning with `v` build and publish the DMG through GitHub Actions. Manual workflow
@@ -75,6 +77,34 @@ If macOS denies clipboard access, the app shows guidance to enable it in System 
 `ClipboardCore` lives in `Sources/ClipboardCore`; its tests live in
 `Tests/ClipboardCoreTests`. The Xcode app target links and imports that local
 package through a small lifecycle controller.
+
+## Privacy and security
+
+- **Sensitive content is skipped.** Besides concealed/transient pasteboard markers and excluded apps,
+  copied text that looks like a private key, access token, API key (AWS, GitHub, GitLab, Slack, Stripe,
+  OpenAI/Anthropic, Google), JWT or payment card number is not saved. Turn this off in
+  Settings › Privacy › Sensitive content.
+- **Deleted means deleted.** SQLite `secure_delete` and FTS5 `secure-delete` overwrite removed history
+  instead of leaving it in free pages or search-index segments. Clearing history also compacts the index.
+- **Private storage.** The history folder is owner-only (`0700`), files are `0600`, a symbolic-link folder
+  is refused, and the folder is excluded from Time Machine and Spotlight.
+- **Bounded captures.** Pasteboard payloads over 64 MB are not recorded, and search indexes at most
+  200,000 characters per item, so a huge copy cannot exhaust memory or disk.
+- Source-app attribution uses the frontmost app when a change is observed, so exclusions are best-effort
+  for background tools (for example `pbcopy`) that write without the `org.nspasteboard.source` marker.
+
+## Additional shortcuts
+
+- `⌥Return` (or **Paste as Plain Text** in a row's context menu or the preview) pastes text without
+  formatting. The history item itself keeps its formatting.
+- Pause recording for **15 minutes** or **1 hour** from the menu bar, the panel's timer button, or Settings.
+  Recording resumes automatically, including after sleep or relaunch.
+- Rows show the source app's icon, a type label and a relative time. The preview shows character, word and
+  line counts, plus **Open Link** for web links and **Reveal in Finder** for copied files.
+- In Settings › Privacy, **Choose App…** adds excluded apps without typing bundle identifiers.
+- **Universal Clipboard (opt-in).** Items restored from history are written for this Mac only by
+  default. Turn on Settings › Privacy › **Share pasted items with my other devices** to let them reach
+  your iPhone, iPad or other Macs through Handoff. History itself never leaves this Mac.
 
 ## Development
 

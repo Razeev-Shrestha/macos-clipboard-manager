@@ -5,6 +5,8 @@ import Foundation
 
 public enum ClipboardPasteIntent: Equatable, Sendable {
     case paste
+    /// Paste only the item's plain text, dropping formatting and other types.
+    case pastePlainText
     case copyOnly
 }
 
@@ -176,7 +178,7 @@ public final class ClipboardPasteCoordinator {
         case cancelled
     }
 
-    private let copyItem: @MainActor (UUID) async -> ClipboardRestoreReceipt?
+    private let copyItem: @MainActor (UUID, ClipboardPasteIntent) async -> ClipboardRestoreReceipt?
     private let restoreStillCurrent: @MainActor (ClipboardRestoreReceipt) -> Bool
     private let closePanel: @MainActor () -> Void
     private let native: ClipboardPasteNativeBoundary
@@ -190,7 +192,7 @@ public final class ClipboardPasteCoordinator {
     private var expectedCloseGeneration: Int?
     private var isShutDown = false
 
-    public init(
+    public convenience init(
         copyItem: @escaping @MainActor (UUID) async -> ClipboardRestoreReceipt?,
         restoreStillCurrent: @escaping @MainActor (ClipboardRestoreReceipt) -> Bool,
         closePanel: @escaping @MainActor () -> Void,
@@ -200,7 +202,31 @@ public final class ClipboardPasteCoordinator {
         focusTimeout: Duration = .milliseconds(300),
         focusPollInterval: Duration = .milliseconds(20)
     ) {
-        self.copyItem = copyItem
+        self.init(
+            copyItemForIntent: { id, _ in await copyItem(id) },
+            restoreStillCurrent: restoreStillCurrent,
+            closePanel: closePanel,
+            native: native,
+            permittedTarget: permittedTarget,
+            onOutcome: onOutcome,
+            focusTimeout: focusTimeout,
+            focusPollInterval: focusPollInterval
+        )
+    }
+
+    /// The intent is passed to `copyItemForIntent` so a plain-text paste can
+    /// write a reduced payload while sharing the same focus and paste checks.
+    public init(
+        copyItemForIntent: @escaping @MainActor (UUID, ClipboardPasteIntent) async -> ClipboardRestoreReceipt?,
+        restoreStillCurrent: @escaping @MainActor (ClipboardRestoreReceipt) -> Bool,
+        closePanel: @escaping @MainActor () -> Void,
+        native: ClipboardPasteNativeBoundary = .live,
+        permittedTarget: @escaping @MainActor (ClipboardPasteTarget) -> Bool = { _ in true },
+        onOutcome: @escaping @MainActor (ClipboardPasteOutcome) -> Void,
+        focusTimeout: Duration = .milliseconds(300),
+        focusPollInterval: Duration = .milliseconds(20)
+    ) {
+        self.copyItem = copyItemForIntent
         self.restoreStillCurrent = restoreStillCurrent
         self.closePanel = closePanel
         self.native = native
@@ -291,7 +317,7 @@ public final class ClipboardPasteCoordinator {
             return
         }
 
-        guard let receipt = await copyItem(itemID) else {
+        guard let receipt = await copyItem(itemID, intent) else {
             finish(.copyFailed, generation: actionGeneration)
             return
         }

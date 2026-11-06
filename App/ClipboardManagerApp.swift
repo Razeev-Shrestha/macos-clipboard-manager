@@ -49,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var appliedShortcutConfiguration: GlobalClipboardShortcutConfiguration?
     private var hasStartedController = false
     private var isTerminating = false
+    private var recordingResumeTimer: Timer?
 
     override init() {
         let configuration = Self.makeConfiguration()
@@ -69,6 +70,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installPanelIfNeeded()
+        // A timed pause that ended while the app was not running resumes now,
+        // before the first apply (no onChange callback is wired yet).
+        if settings.value.timedPauseHasEnded(at: Date()) {
+            settings.update { $0.resumeRecording() }
+        }
         apply(settings.value)
         settings.onChange = { [weak self] value in self?.apply(value) }
         lifecycleObserver.start()
@@ -177,8 +183,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     private func installPasteCoordinator(for panel: ClipboardPanelController) {
         let coordinator = ClipboardPasteCoordinator(
-            copyItem: { [weak controller] itemID in
-                await controller?.copyItemWithReceipt(id: itemID)
+            copyItemForIntent: { [weak controller] itemID, intent in
+                await controller?.copyItemWithReceipt(id: itemID, plainTextOnly: intent == .pastePlainText)
             },
             restoreStillCurrent: { [weak controller] receipt in
                 controller?.isRestoreCurrent(receipt) ?? false
@@ -331,6 +337,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         #endif
 
+        let legacyDomain = ClipboardSettingsStore.legacyDefaultsDomain
+        if let bundleIdentifier = Bundle.main.bundleIdentifier, bundleIdentifier != legacyDomain {
+            ClipboardSettingsStore.migrateSettings(from: UserDefaults(suiteName: legacyDomain), to: .standard)
+        }
+
         return Configuration(
             pasteboard: NSPasteboardBoundary(
                 pasteboard: .general,
@@ -477,7 +488,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func toggleRecording() {
-        settings.update { $0.recordingPaused.toggle() }
+        settings.update { value in
+            if value.recordingPaused {
+                value.resumeRecording()
+            } else {
+                value.pauseRecording()
+            }
+        }
+    }
+
+    func pauseRecording(for duration: TimeInterval) {
+        settings.update { $0.pauseRecording(until: Date().addingTimeInterval(duration)) }
+    }
+
+    /// Resumes a timed pause when its time has come, including after sleep or a
+    /// relaunch, and otherwise schedules the resume.
+    private func scheduleRecordingResume(for value: ClipboardManagerSettings) {
+        recordingResumeTimer?.invalidate()
+        recordingResumeTimer = nil
+        guard value.recordingPaused, let resumeDate = value.recordingResumeDate else {
+            return
+        }
+        let timer = Timer(fire: resumeDate, interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.settings.value.timedPauseHasEnded(at: Date()) else { return }
+                self.settings.update { $0.resumeRecording() }
+            }
+        }
+        timer.tolerance = 1
+        RunLoop.main.add(timer, forMode: .common)
+        recordingResumeTimer = timer
     }
 
     func clearHistory(keepingPinned: Bool) {
@@ -503,6 +543,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     private func apply(_ value: ClipboardManagerSettings) {
+        // Reached after wake or a late timer: resuming publishes a new value
+        // through onChange, which applies it in full.
+        if value.timedPauseHasEnded(at: Date()), settings.onChange != nil {
+            settings.update { $0.resumeRecording() }
+            return
+        }
+        scheduleRecordingResume(for: value)
+        controller.setIgnoresLikelySecrets(value.ignoresLikelySecrets)
+        controller.setSharesRestoredItemsWithOtherDevices(value.sharesRestoredItemsWithOtherDevices)
         switch value.appearance {
         case .system: NSApp.appearance = nil
         case .light: NSApp.appearance = NSAppearance(named: .aqua)
@@ -541,7 +590,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let menu = NSMenu()
         menu.autoenablesItems = true
         menu.addItem(withTitle: "Open Clipboard", action: #selector(openClipboardFromMenu), keyEquivalent: "")
-        menu.addItem(withTitle: settings.value.recordingPaused ? "Resume Recording" : "Pause Recording", action: #selector(toggleRecordingFromMenu), keyEquivalent: "")
+        if settings.value.recordingPaused {
+            if let resumeDate = settings.value.recordingResumeDate {
+                let status = menu.addItem(
+                    withTitle: "Paused until \(resumeDate.formatted(date: .omitted, time: .shortened))",
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                status.isEnabled = false
+            }
+            menu.addItem(withTitle: "Resume Recording", action: #selector(toggleRecordingFromMenu), keyEquivalent: "")
+        } else {
+            menu.addItem(withTitle: "Pause Recording", action: #selector(toggleRecordingFromMenu), keyEquivalent: "")
+            menu.addItem(withTitle: "Pause for 15 Minutes", action: #selector(pauseFifteenMinutesFromMenu), keyEquivalent: "")
+            menu.addItem(withTitle: "Pause for 1 Hour", action: #selector(pauseOneHourFromMenu), keyEquivalent: "")
+        }
         menu.addItem(.separator())
         let clearHistoryItem = menu.addItem(
             withTitle: "Clear Unpinned History…",
@@ -560,6 +623,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc private func openClipboardFromMenu() { openPanel() }
     @objc private func toggleRecordingFromMenu() { toggleRecording() }
+    @objc private func pauseFifteenMinutesFromMenu() { pauseRecording(for: 15 * 60) }
+    @objc private func pauseOneHourFromMenu() { pauseRecording(for: 60 * 60) }
     @objc private func openSettingsFromMenu() { openSettings() }
     @objc private func openHelpFromMenu() { openHelp() }
 

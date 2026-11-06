@@ -129,19 +129,36 @@ struct ClipboardPanelView: View {
                 }
             }
 
-            Button(action: toggleRecording) {
-                Label(
-                    settings.value.recordingPaused ? "Resume Recording" : "Pause Recording",
-                    systemImage: settings.value.recordingPaused ? "play.fill" : "pause.fill"
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                Button(action: toggleRecording) {
+                    Label(
+                        settings.value.recordingPaused ? "Resume Recording" : "Pause Recording",
+                        systemImage: settings.value.recordingPaused ? "play.fill" : "pause.fill"
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .focusable()
+                .focused($focusedChromeControl, equals: "pause")
+                .clipboardKeyboardActivation(toggleRecording)
+
+                if !settings.value.recordingPaused {
+                    Menu {
+                        Button("Pause for 15 Minutes") { pauseRecording(for: 15 * 60) }
+                        Button("Pause for 1 Hour") { pauseRecording(for: 60 * 60) }
+                    } label: {
+                        Image(systemName: "timer")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Pause recording for a while")
+                    .accessibilityLabel("Pause recording temporarily")
+                }
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
             .padding(.top, 14)
-            .focusable()
-            .focused($focusedChromeControl, equals: "pause")
-            .clipboardKeyboardActivation(toggleRecording)
 
             Spacer(minLength: 16)
 
@@ -257,7 +274,7 @@ struct ClipboardPanelView: View {
     private var sidebarStatus: some View {
         HStack(spacing: 8) {
             Label(
-                settings.value.recordingPaused ? "Recording Paused" : "Recording Active",
+                recordingStatusText,
                 systemImage: settings.value.recordingPaused ? "pause.circle" : "record.circle"
             )
             .font(.caption.weight(.medium))
@@ -343,7 +360,27 @@ struct ClipboardPanelView: View {
     }
 
     private func toggleRecording() {
-        settings.update { $0.recordingPaused.toggle() }
+        settings.update { value in
+            if value.recordingPaused {
+                value.resumeRecording()
+            } else {
+                value.pauseRecording()
+            }
+        }
+    }
+
+    private func pauseRecording(for duration: TimeInterval) {
+        settings.update { $0.pauseRecording(until: Date().addingTimeInterval(duration)) }
+    }
+
+    private var recordingStatusText: String {
+        guard settings.value.recordingPaused else {
+            return "Recording Active"
+        }
+        if let resumeDate = settings.value.recordingResumeDate {
+            return "Paused until \(resumeDate.formatted(date: .omitted, time: .shortened))"
+        }
+        return "Recording Paused"
     }
 
     private var tabAnimation: Animation? {
@@ -406,6 +443,7 @@ struct ClipboardPanelView: View {
                         isCopying: model.isCopying,
                         canMutateHistory: model.canMutateHistory,
                         copy: model.copySelected,
+                        pastePlainText: model.pastePlainTextSelected,
                         togglePin: model.togglePinSelected,
                         delete: model.deleteSelected
                     )
@@ -438,6 +476,10 @@ struct ClipboardPanelView: View {
                             copy: {
                                 model.select(item.id)
                                 model.copySelected()
+                            },
+                            pastePlainText: {
+                                model.select(item.id)
+                                model.pastePlainTextSelected()
                             },
                             togglePin: {
                                 model.select(item.id)
@@ -548,9 +590,10 @@ struct ClipboardPanelView: View {
             .foregroundStyle(.secondary)
             .padding(.bottom, 4)
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 5), alignment: .leading, spacing: 8) {
                 ShortcutHint(keys: ["↑", "↓"], label: "Navigate")
                 ShortcutHint(keys: ["↩"], label: "Paste")
+                ShortcutHint(keys: ["⌥", "↩"], label: "Plain text")
                 ShortcutHint(keys: ["⌘", "↩"], label: "Copy")
                 ShortcutHint(keys: ["Space"], label: "Preview")
                 ShortcutHint(keys: ["⌘", "P"], label: "Pin")
@@ -668,6 +711,7 @@ private struct ClipboardHistoryRow: View {
     let select: () -> Void
     let paste: () -> Void
     let copy: () -> Void
+    let pastePlainText: () -> Void
     let togglePin: () -> Void
     let delete: () -> Void
 
@@ -679,6 +723,16 @@ private struct ClipboardHistoryRow: View {
             .onTapGesture(perform: select)
             .background(rowBackground)
             .overlay(rowBorder)
+            .contextMenu {
+                Button("Paste", action: paste)
+                if item.primaryType.hasPlainTextVariant {
+                    Button("Paste as Plain Text", action: pastePlainText)
+                }
+                Button("Copy", action: copy)
+                Divider()
+                Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
+                Button("Delete…", role: .destructive, action: delete)
+            }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityHint("Press to select. Actions are available for paste, copy, pinning, and deletion.")
@@ -686,6 +740,7 @@ private struct ClipboardHistoryRow: View {
             .accessibilityAddTraits(isSelected ? .isSelected : [])
             .accessibilityAction { select() }
             .accessibilityAction(named: "Paste") { paste() }
+            .accessibilityAction(named: "Paste as Plain Text") { pastePlainText() }
             .accessibilityAction(named: "Copy") { copy() }
             .accessibilityAction(named: item.isPinned ? "Unpin" : "Pin") { togglePin() }
             .accessibilityAction(named: "Delete") { delete() }
@@ -694,7 +749,7 @@ private struct ClipboardHistoryRow: View {
     @ViewBuilder
     private var rowContent: some View {
         let visibleNumberText = visibleNumber.map { String($0) } ?? ""
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             Text(visibleNumberText)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -702,6 +757,8 @@ private struct ClipboardHistoryRow: View {
 
             if item.primaryType == .image {
                 ClipboardHistoryThumbnail(id: item.id, loadImageData: loadImageData)
+            } else {
+                SourceApplicationIcon(bundleIdentifier: item.sourceBundleID, fallbackSymbol: item.primaryType.symbolName)
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -709,12 +766,15 @@ private struct ClipboardHistoryRow: View {
                     .font(contentFont)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
+                    ClipboardTypeChip(type: item.primaryType)
                     Text(sourceName)
+                        .lineLimit(1)
                     Text("·")
-                    Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
-                    Text("·")
-                    Text(item.primaryType.displayName)
+                    TimelineView(.everyMinute) { context in
+                        Text(ClipboardRelativeTime.text(for: item.createdAt, now: context.date))
+                    }
+                    .help(item.createdAt.formatted(date: .abbreviated, time: .shortened))
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -723,8 +783,8 @@ private struct ClipboardHistoryRow: View {
             if item.isPinned {
                 Image(systemName: "pin.fill")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                .accessibilityLabel("Pinned")
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Pinned")
             }
         }
     }
@@ -766,6 +826,91 @@ private struct ClipboardHistoryRow: View {
         let source = sourceName
         let pinned = item.isPinned ? ", pinned" : ""
         return "\(prefix)\(content), \(item.primaryType.displayName), from \(source), \(item.createdAt.formatted(date: .abbreviated, time: .shortened))\(pinned)"
+    }
+}
+
+/// A compact, tinted label for an item's content type.
+private struct ClipboardTypeChip: View {
+    let type: ClipboardPrimaryType
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    var body: some View {
+        Label(type.displayName, systemImage: type.symbolName)
+            .labelStyle(.titleAndIcon)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(colorSchemeContrast == .increased ? Color.primary : type.tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(type.tint.opacity(0.14), in: Capsule())
+            .fixedSize()
+            .accessibilityHidden(true)
+    }
+}
+
+/// The source application's icon, resolved once per bundle identifier.
+private struct SourceApplicationIcon: View {
+    let bundleIdentifier: String?
+    let fallbackSymbol: String
+
+    var body: some View {
+        Group {
+            if let icon = ApplicationIconCache.icon(for: bundleIdentifier) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+            } else {
+                Image(systemName: fallbackSymbol)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 28, height: 28)
+        .accessibilityHidden(true)
+    }
+}
+
+@MainActor
+private enum ApplicationIconCache {
+    private static var icons: [String: NSImage] = [:]
+    private static var missing: Set<String> = []
+
+    static func icon(for bundleIdentifier: String?) -> NSImage? {
+        guard let bundleIdentifier, !missing.contains(bundleIdentifier) else {
+            return nil
+        }
+        if let cached = icons[bundleIdentifier] {
+            return cached
+        }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
+            missing.insert(bundleIdentifier)
+            return nil
+        }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        icons[bundleIdentifier] = icon
+        return icon
+    }
+}
+
+/// Short relative timestamps ("Just now", "5 min ago", "Yesterday") that fall
+/// back to a date for older items.
+@MainActor
+enum ClipboardRelativeTime {
+    private static let formatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        formatter.dateTimeStyle = .named
+        return formatter
+    }()
+
+    static func text(for date: Date, now: Date) -> String {
+        let elapsed = now.timeIntervalSince(date)
+        if elapsed < 60 {
+            return "Just now"
+        }
+        if elapsed < 7 * 24 * 60 * 60 {
+            return formatter.localizedString(for: date, relativeTo: now)
+        }
+        return date.formatted(date: .abbreviated, time: .omitted)
     }
 }
 
@@ -815,21 +960,28 @@ private struct ClipboardPreview: View {
     let isCopying: Bool
     let canMutateHistory: Bool
     let copy: () -> Void
+    let pastePlainText: () -> Void
     let togglePin: () -> Void
     let delete: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
+            HStack(spacing: 8) {
                 Label("Preview", systemImage: item.primaryType.symbolName)
                     .font(.headline)
                 Spacer()
                 Button("Copy", action: copy)
                     .disabled(isCopying)
+                if item.primaryType.hasPlainTextVariant {
+                    Button("Paste Plain", action: pastePlainText)
+                        .disabled(isCopying)
+                        .help("Paste without formatting (⌥↩)")
+                }
                 Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
                 Button("Delete", role: .destructive, action: delete)
                     .disabled(!canMutateHistory)
             }
+            .controlSize(.small)
 
             ScrollView {
                 if let previewError {
@@ -843,17 +995,88 @@ private struct ClipboardPreview: View {
             .padding(10)
             .background(.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-            LabeledContent("Source", value: item.sourceAppName ?? item.sourceBundleID ?? "Unknown App")
-            LabeledContent("Copied", value: item.createdAt.formatted(date: .abbreviated, time: .shortened))
-            LabeledContent("Type", value: item.primaryType.displayName)
-            if item.primaryType == .url, let url = item.payload?.url?.absoluteString ?? item.searchableText {
-                LabeledContent("URL", value: url)
-                    .lineLimit(2)
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
+                detailRow("Source", item.sourceAppName ?? item.sourceBundleID ?? "Unknown App")
+                detailRow("Copied", item.createdAt.formatted(date: .abbreviated, time: .shortened))
+                detailRow("Type", item.primaryType.displayName)
+                if let statistics = textStatistics {
+                    detailRow("Length", statistics)
+                }
+                if item.byteSize > 0 {
+                    detailRow("Size", item.byteSize.formatted(.byteCount(style: .file)))
+                }
+            }
+            .font(.callout)
+
+            if let link = openableURL {
+                HStack {
+                    Text(link.absoluteString)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button("Open Link") { NSWorkspace.shared.open(link) }
+                        .controlSize(.small)
+                }
+            }
+            if !fileURLs.isEmpty {
+                HStack {
+                    Spacer()
+                    Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting(fileURLs) }
+                        .controlSize(.small)
+                }
             }
         }
         .padding(16)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .gridColumnAlignment(.trailing)
+            Text(value)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    /// Only web links are offered for opening; arbitrary schemes could launch apps.
+    private var openableURL: URL? {
+        guard item.primaryType == .url,
+              let url = item.payload?.url ?? item.searchableText.flatMap(URL.init(string:)),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http"
+        else {
+            return nil
+        }
+        return url
+    }
+
+    /// Files that still exist; nothing is opened, only selected in Finder.
+    private var fileURLs: [URL] {
+        guard item.primaryType == .files, let payload = item.payload else {
+            return []
+        }
+        let urls = payload.items?.compactMap(\.url) ?? [payload.url].compactMap { $0 }
+        return urls.filter { $0.isFileURL && FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private var textStatistics: String? {
+        guard item.primaryType.hasPlainTextVariant,
+              let text = item.payload?.plainText ?? item.searchableText,
+              !text.isEmpty
+        else {
+            return nil
+        }
+        let characters = text.count
+        let words = text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).count
+        return "\(characters.formatted()) characters · \(words.formatted()) words · \(lines.formatted()) \(lines == 1 ? "line" : "lines")"
     }
 
     @ViewBuilder
@@ -866,13 +1089,22 @@ private struct ClipboardPreview: View {
         {
             BoundedClipboardImage(identity: "\(item.id.uuidString):\(item.contentHash)", data: data)
         } else if item.primaryType == .files,
-           let items = item.payload?.items
+           let items = item.payload?.items ?? item.payload.map({ [ClipboardPayloadItem(primaryTypeIdentifier: $0.primaryTypeIdentifier, representations: [], url: $0.url)] })
         {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, payloadItem in
                     let fileName = payloadItem.url?.lastPathComponent ?? payloadItem.url?.absoluteString ?? "File"
-                    Text(fileName)
-                        .accessibilityLabel("File \(fileName)")
+                    HStack(spacing: 8) {
+                        if let url = payloadItem.url, url.isFileURL {
+                            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                                .resizable()
+                                .frame(width: 20, height: 20)
+                                .accessibilityHidden(true)
+                        }
+                        Text(fileName)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("File \(fileName)")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -996,6 +1228,26 @@ private extension ClipboardPrimaryType {
         case .image: "photo"
         case .files: "folder"
         case .other: "doc"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .text: .blue
+        case .code: .purple
+        case .url: .teal
+        case .richText: .indigo
+        case .image: .pink
+        case .files: .orange
+        case .other: .gray
+        }
+    }
+
+    /// Whether "Paste as Plain Text" makes sense for this type.
+    var hasPlainTextVariant: Bool {
+        switch self {
+        case .text, .code, .url, .richText, .other: true
+        case .image, .files: false
         }
     }
 }

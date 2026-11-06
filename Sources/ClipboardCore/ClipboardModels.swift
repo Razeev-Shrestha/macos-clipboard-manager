@@ -129,8 +129,21 @@ public struct ClipboardCapture: Codable, Equatable, Hashable, Sendable {
     ) {
         self.payload = payload
         self.primaryType = primaryType
-        self.searchableText = searchableText ?? payload.plainText ?? payload.url?.absoluteString
+        self.searchableText = (searchableText ?? payload.plainText ?? payload.url?.absoluteString)
+            .map(Self.boundedSearchableText)
         self.source = source
+    }
+
+    /// Search indexing works on at most this many characters. The full text stays
+    /// in the payload for preview and paste; only the FTS index is bounded.
+    public static let maximumSearchableCharacters = 200_000
+
+    private static func boundedSearchableText(_ text: String) -> String {
+        // UTF-8 length is O(1) and bounds the character count from above.
+        guard text.utf8.count > maximumSearchableCharacters else {
+            return text
+        }
+        return String(text.prefix(maximumSearchableCharacters))
     }
 }
 

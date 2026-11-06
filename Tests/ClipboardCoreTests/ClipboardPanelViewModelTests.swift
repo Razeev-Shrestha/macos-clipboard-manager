@@ -520,3 +520,15 @@ final class ClipboardPanelViewModelTests: XCTestCase {
         return event
     }
 }
+
+extension ClipboardPanelViewModelTests {
+    func testOptionReturnRequestsPlainTextPaste() {
+        let model = makeModel()
+        let itemID = UUID()
+        model.acceptPublishedResults(results([itemID]))
+        var intent: ClipboardPasteIntent?
+        model.onPasteRequested = { _, value in intent = value }
+        XCTAssertTrue(model.handleKeyDown(keyEvent(keyCode: 36, modifiers: .option)))
+        XCTAssertEqual(intent, .pastePlainText)
+    }
+}

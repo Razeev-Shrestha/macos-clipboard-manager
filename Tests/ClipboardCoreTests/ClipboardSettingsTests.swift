@@ -157,3 +157,90 @@ final class ClipboardSettingsTests: XCTestCase {
         return (defaults, suiteName)
     }
 }
+
+@MainActor
+final class ClipboardSettingsMigrationTests: XCTestCase {
+    func testMigrationCopiesLegacySettingsOnceAndNeverOverwrites() throws {
+        let legacyName = "ClipboardSettingsMigrationTests.legacy.\(UUID().uuidString)"
+        let currentName = "ClipboardSettingsMigrationTests.current.\(UUID().uuidString)"
+        let legacy = try XCTUnwrap(UserDefaults(suiteName: legacyName))
+        let current = try XCTUnwrap(UserDefaults(suiteName: currentName))
+        defer {
+            legacy.removePersistentDomain(forName: legacyName)
+            current.removePersistentDomain(forName: currentName)
+        }
+
+        let legacyStore = ClipboardSettingsStore(defaults: legacy)
+        legacyStore.update {
+            $0.menuBarVisible = false
+            $0.excludedBundleIdentifiers = ["fixture.password-manager"]
+        }
+
+        XCTAssertTrue(ClipboardSettingsStore.migrateSettings(from: legacy, to: current))
+        let migrated = ClipboardSettingsStore(defaults: current)
+        XCTAssertFalse(migrated.value.menuBarVisible)
+        XCTAssertEqual(migrated.value.excludedBundleIdentifiers, ["fixture.password-manager"])
+
+        migrated.update { $0.menuBarVisible = true }
+        XCTAssertFalse(ClipboardSettingsStore.migrateSettings(from: legacy, to: current))
+        XCTAssertTrue(ClipboardSettingsStore(defaults: current).value.menuBarVisible)
+    }
+
+    func testMigrationWithoutLegacySettingsDoesNothing() throws {
+        let currentName = "ClipboardSettingsMigrationTests.empty.\(UUID().uuidString)"
+        let current = try XCTUnwrap(UserDefaults(suiteName: currentName))
+        defer { current.removePersistentDomain(forName: currentName) }
+        XCTAssertFalse(ClipboardSettingsStore.migrateSettings(from: nil, to: current))
+        XCTAssertNil(current.object(forKey: ClipboardSettingsStore.settingsKey))
+    }
+}
+
+final class ClipboardTimedPauseTests: XCTestCase {
+    func testTimedPauseEndsOnlyAfterItsResumeDate() {
+        var settings = ClipboardManagerSettings.default
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        settings.pauseRecording(until: start.addingTimeInterval(900))
+
+        XCTAssertTrue(settings.recordingPaused)
+        XCTAssertFalse(settings.timedPauseHasEnded(at: start.addingTimeInterval(899)))
+        XCTAssertTrue(settings.timedPauseHasEnded(at: start.addingTimeInterval(900)))
+
+        settings.resumeRecording()
+        XCTAssertFalse(settings.recordingPaused)
+        XCTAssertNil(settings.recordingResumeDate)
+        XCTAssertFalse(settings.timedPauseHasEnded(at: .distantFuture))
+    }
+
+    func testIndefinitePauseNeverEndsByItself() {
+        var settings = ClipboardManagerSettings.default
+        settings.pauseRecording()
+        XCTAssertFalse(settings.timedPauseHasEnded(at: .distantFuture))
+    }
+
+    func testSettingsSavedBeforeNewKeysDecodeWithSafeDefaults() throws {
+        let legacyJSON = Data(#"{"recordingPaused":false,"menuBarVisible":true}"#.utf8)
+        let decoded = try JSONDecoder().decode(ClipboardManagerSettings.self, from: legacyJSON)
+        XCTAssertTrue(decoded.ignoresLikelySecrets)
+        XCTAssertNil(decoded.recordingResumeDate)
+    }
+
+    func testTimedPauseRoundTripsThroughCoding() throws {
+        var settings = ClipboardManagerSettings.default
+        settings.pauseRecording(until: Date(timeIntervalSinceReferenceDate: 5_000))
+        settings.ignoresLikelySecrets = false
+        let decoded = try JSONDecoder().decode(
+            ClipboardManagerSettings.self,
+            from: JSONEncoder().encode(settings)
+        )
+        XCTAssertEqual(decoded, settings)
+    }
+}
+
+final class UniversalClipboardSettingTests: XCTestCase {
+    func testSharingDefaultsOffIncludingForOlderSavedSettings() throws {
+        XCTAssertFalse(ClipboardManagerSettings.default.sharesRestoredItemsWithOtherDevices)
+        let legacyJSON = Data(#"{"recordingPaused":false}"#.utf8)
+        let decoded = try JSONDecoder().decode(ClipboardManagerSettings.self, from: legacyJSON)
+        XCTAssertFalse(decoded.sharesRestoredItemsWithOtherDevices)
+    }
+}

@@ -413,3 +413,29 @@ private final class NativeSpy {
         return boundary
     }
 }
+
+extension ClipboardPasteCoordinatorTests {
+    func testPlainTextIntentReachesCopyAndFollowsPastePath() async {
+        let native = NativeSpy()
+        var outcomes: [ClipboardPasteOutcome] = []
+        var copiedIntents: [ClipboardPasteIntent] = []
+        var coordinator: ClipboardPasteCoordinator?
+        coordinator = ClipboardPasteCoordinator(
+            copyItemForIntent: { _, intent in
+                copiedIntents.append(intent)
+                return ClipboardRestoreReceipt(changeCount: 21)
+            },
+            restoreStillCurrent: { _ in true },
+            closePanel: { coordinator?.panelDidClose() },
+            native: native.boundary,
+            onOutcome: { outcomes.append($0) }
+        )
+
+        coordinator?.begin(itemID: UUID(), intent: .pastePlainText, target: nil)
+        await settle()
+
+        XCTAssertEqual(copiedIntents, [.pastePlainText])
+        // With no destination it behaves exactly like a normal paste: copy only.
+        XCTAssertEqual(outcomes, [.copiedOnly(.noTarget)])
+    }
+}

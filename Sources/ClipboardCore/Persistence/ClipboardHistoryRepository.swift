@@ -95,7 +95,11 @@ public actor ClipboardHistoryRepository {
         database = connection
         do {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: databaseURL.path)
+            // Zero freed pages so deleted clipboard text is not recoverable from
+            // the database file or its rollback journal.
+            try execute("PRAGMA secure_delete = ON", database: connection)
             try migrateIfNeeded()
+            enableSearchIndexSecureDelete()
             try enforceRetention(now: Date())
             cleanupOrphanedBlobs()
         } catch let error as ClipboardHistoryRepositoryError {
@@ -357,6 +361,25 @@ public actor ClipboardHistoryRepository {
             try execute(sql, database: database)
         }
         cleanupOrphanedBlobs()
+        compactSearchIndex()
+    }
+
+    /// Asks FTS5 to remove deleted rows from the index immediately instead of
+    /// leaving delete markers beside the original tokens. Older SQLite builds
+    /// without this option keep working; `compactSearchIndex` still merges.
+    private func enableSearchIndexSecureDelete() {
+        guard let database else { return }
+        try? execute(
+            "INSERT INTO clipboard_items_fts(clipboard_items_fts, rank) VALUES('secure-delete', 1)",
+            database: database
+        )
+    }
+
+    /// Merges every FTS5 segment so text from cleared rows no longer survives in
+    /// older index segments. Failure leaves history correct, only less compact.
+    private func compactSearchIndex() {
+        guard let database else { return }
+        try? execute("INSERT INTO clipboard_items_fts(clipboard_items_fts) VALUES('optimize')", database: database)
     }
 
     public func enforceRetention(now: Date = Date()) throws {
@@ -386,20 +409,36 @@ public actor ClipboardHistoryRepository {
         closeConnection()
     }
 
+    /// Creates (or re-secures) the private storage directory: owner-only
+    /// permissions, never a symbolic link, excluded from Time Machine and Spotlight.
     private func createParentDirectoryIfNeeded() throws {
-        let parent = databaseURL.deletingLastPathComponent()
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory) {
-            guard isDirectory.boolValue else {
+        var parent = databaseURL.deletingLastPathComponent()
+        let fileManager = FileManager.default
+        if let attributes = try? fileManager.attributesOfItem(atPath: parent.path) {
+            guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+                // A symbolic link or regular file could redirect history elsewhere.
                 throw ClipboardHistoryRepositoryError.openFailed
             }
-            return
+        } else {
+            try fileManager.createDirectory(
+                at: parent,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
         }
-        try FileManager.default.createDirectory(
-            at: parent,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
+
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? parent.setResourceValues(values)
+        let neverIndexMarker = parent.appendingPathComponent(".metadata_never_index", isDirectory: false)
+        if !fileManager.fileExists(atPath: neverIndexMarker.path) {
+            fileManager.createFile(
+                atPath: neverIndexMarker.path,
+                contents: Data(),
+                attributes: [.posixPermissions: 0o600]
+            )
+        }
     }
 
     private func migrateIfNeeded() throws {

@@ -719,3 +719,161 @@ private final class ControllerDatabaseFixture {
         try? FileManager.default.removeItem(at: directoryURL)
     }
 }
+
+@MainActor
+final class ClipboardHistoryControllerFeatureTests: XCTestCase {
+    /// Built at runtime so repository secret scanners never see a key-shaped literal.
+    private let syntheticPrivateKey = "-----BEGIN " + "OPENSSH PRIVATE KEY-----\nsynthetic-not-a-key\n-----END " + "OPENSSH PRIVATE KEY-----"
+
+    func testLikelySecretIsNotRecordedByDefault() async throws {
+        let fixture = try ControllerDatabaseFixture()
+        defer { fixture.remove() }
+        let pasteboard = ControllerPasteboard()
+        let controller = ClipboardHistoryController(pasteboard: pasteboard, databaseURL: fixture.databaseURL)
+        XCTAssertTrue(controller.ignoresLikelySecrets)
+        await controller.start()
+
+        pasteboard.record(makeTextCapture(syntheticPrivateKey))
+        _ = controller.pollNow()
+        pasteboard.record(makeTextCapture("synthetic ordinary note"))
+        _ = controller.pollNow()
+        await controller.shutdown()
+
+        let reopened = ClipboardHistoryController(pasteboard: ControllerPasteboard(), databaseURL: fixture.databaseURL)
+        await reopened.start()
+        XCTAssertEqual(reopened.items.map(\.searchableText), ["synthetic ordinary note"])
+        await reopened.shutdown()
+    }
+
+    func testLikelySecretIsRecordedWhenFilterDisabled() async throws {
+        let fixture = try ControllerDatabaseFixture()
+        defer { fixture.remove() }
+        let pasteboard = ControllerPasteboard()
+        let controller = ClipboardHistoryController(pasteboard: pasteboard, databaseURL: fixture.databaseURL)
+        controller.setIgnoresLikelySecrets(false)
+        await controller.start()
+
+        pasteboard.record(makeTextCapture(syntheticPrivateKey))
+        _ = controller.pollNow()
+        await controller.shutdown()
+
+        let reopened = ClipboardHistoryController(pasteboard: ControllerPasteboard(), databaseURL: fixture.databaseURL)
+        await reopened.start()
+        XCTAssertEqual(reopened.items.count, 1)
+        await reopened.shutdown()
+    }
+
+    func testPlainTextCopyWritesOnlyTheStringRepresentation() async throws {
+        let fixture = try ControllerDatabaseFixture()
+        defer { fixture.remove() }
+        let attributed = NSAttributedString(
+            string: "synthetic bold heading",
+            attributes: [.font: NSFont.boldSystemFont(ofSize: 18)]
+        )
+        let rtf = try XCTUnwrap(attributed.rtf(from: NSRange(location: 0, length: attributed.length)))
+        let payload = ClipboardPayload(
+            primaryTypeIdentifier: NSPasteboard.PasteboardType.rtf.rawValue,
+            representations: [
+                ClipboardRepresentation(typeIdentifier: NSPasteboard.PasteboardType.rtf.rawValue, data: rtf),
+                ClipboardRepresentation(typeIdentifier: NSPasteboard.PasteboardType.string.rawValue, data: Data("synthetic bold heading".utf8))
+            ],
+            availableTypeIdentifiers: [NSPasteboard.PasteboardType.rtf.rawValue, NSPasteboard.PasteboardType.string.rawValue],
+            plainText: "synthetic bold heading"
+        )
+        let repository = ClipboardHistoryRepository(databaseURL: fixture.databaseURL)
+        try await repository.open()
+        let stored = try await repository.record(ClipboardItem(
+            capture: ClipboardCapture(payload: payload, primaryType: .richText),
+            createdAt: Date()
+        ))
+        await repository.close()
+
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let controller = ClipboardHistoryController(
+            pasteboard: NSPasteboardBoundary(pasteboard: pasteboard),
+            databaseURL: fixture.databaseURL
+        )
+        await controller.start()
+
+        let receipt = await controller.copyItemWithReceipt(id: stored.id, plainTextOnly: true)
+        XCTAssertNotNil(receipt)
+        XCTAssertEqual(pasteboard.string(forType: .string), "synthetic bold heading")
+        XCTAssertNil(pasteboard.data(forType: .rtf))
+        XCTAssertEqual(controller.pollNow(), .selfWriteSuppressed(changeCount: pasteboard.changeCount))
+
+        _ = await controller.copyItemWithReceipt(id: stored.id)
+        XCTAssertNotNil(pasteboard.data(forType: .rtf), "a normal copy keeps formatting")
+        await controller.shutdown()
+    }
+
+    func testPlainTextPayloadIsUnavailableForImagesAndFiles() {
+        let payload = ClipboardPayload(
+            primaryTypeIdentifier: NSPasteboard.PasteboardType.png.rawValue,
+            representations: [ClipboardRepresentation(typeIdentifier: NSPasteboard.PasteboardType.png.rawValue, data: Data([0x89]))]
+        )
+        let item = ClipboardItem(capture: ClipboardCapture(payload: payload, primaryType: .image), createdAt: Date())
+        XCTAssertNil(ClipboardHistoryController.plainTextPayload(for: item, payload: payload))
+    }
+
+    private func makeTextCapture(_ text: String) -> ClipboardCapture {
+        let payload = ClipboardPayload(
+            primaryTypeIdentifier: "public.utf8-plain-text",
+            representations: [ClipboardRepresentation(typeIdentifier: "public.utf8-plain-text", data: Data(text.utf8))],
+            availableTypeIdentifiers: ["public.utf8-plain-text"],
+            plainText: text
+        )
+        return ClipboardCapture(payload: payload, primaryType: .text, searchableText: text)
+    }
+}
+
+@MainActor
+final class UniversalClipboardSharingTests: XCTestCase {
+    func testSharingIsOffByDefaultAndForwardedToTheBoundary() async throws {
+        let fixture = try ControllerDatabaseFixture()
+        defer { fixture.remove() }
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let boundary = NSPasteboardBoundary(pasteboard: pasteboard)
+        let controller = ClipboardHistoryController(pasteboard: boundary, databaseURL: fixture.databaseURL)
+        XCTAssertFalse(boundary.sharesWritesWithOtherDevices)
+
+        controller.setSharesRestoredItemsWithOtherDevices(true)
+        XCTAssertTrue(boundary.sharesWritesWithOtherDevices)
+        controller.setSharesRestoredItemsWithOtherDevices(false)
+        XCTAssertFalse(boundary.sharesWritesWithOtherDevices)
+    }
+
+    func testSharedRestoreStillWritesAndSuppressesSelfCapture() async throws {
+        let fixture = try ControllerDatabaseFixture()
+        defer { fixture.remove() }
+        let repository = ClipboardHistoryRepository(databaseURL: fixture.databaseURL)
+        try await repository.open()
+        let text = "synthetic shared restore"
+        let payload = ClipboardPayload(
+            primaryTypeIdentifier: "public.utf8-plain-text",
+            representations: [ClipboardRepresentation(typeIdentifier: "public.utf8-plain-text", data: Data(text.utf8))],
+            plainText: text
+        )
+        let stored = try await repository.record(ClipboardItem(
+            capture: ClipboardCapture(payload: payload, primaryType: .text),
+            createdAt: Date()
+        ))
+        await repository.close()
+
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let controller = ClipboardHistoryController(
+            pasteboard: NSPasteboardBoundary(pasteboard: pasteboard),
+            databaseURL: fixture.databaseURL
+        )
+        controller.setSharesRestoredItemsWithOtherDevices(true)
+        await controller.start()
+
+        let receipt = await controller.copyItemWithReceipt(id: stored.id)
+        XCTAssertNotNil(receipt)
+        XCTAssertEqual(pasteboard.string(forType: .string), text)
+        XCTAssertEqual(controller.pollNow(), .selfWriteSuppressed(changeCount: pasteboard.changeCount))
+        await controller.shutdown()
+    }
+}

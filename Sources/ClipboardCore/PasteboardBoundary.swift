@@ -14,6 +14,8 @@ public enum PasteboardSkipReason: String, Codable, Equatable, Sendable {
     case malformed
     case privacyMarker
     case changedDuringRead
+    /// The payload exceeds the capture size limit and is not kept in history.
+    case tooLarge
 }
 
 public enum PasteboardReadResult: Equatable, Sendable {
@@ -66,6 +68,12 @@ public protocol ClipboardPasteboard: AnyObject {
     func readSnapshotIfStable(expectedChangeCount: Int) -> PasteboardReadResult
     func write(payload: ClipboardPayload) -> PasteboardWriteResult
     func setExcludedBundleIdentifiers(_ identifiers: Set<String>)
+    /// Whether restored items may travel to nearby devices via Universal Clipboard.
+    func setSharesWritesWithOtherDevices(_ shares: Bool)
+}
+
+public extension ClipboardPasteboard {
+    func setSharesWritesWithOtherDevices(_ shares: Bool) {}
 }
 
 /// Main-actor adapter around a concrete NSPasteboard.  The app should pass
@@ -76,15 +84,25 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
     private let sourceProvider: () -> ClipboardSource?
     private let accessBehaviorProvider: () -> NSPasteboard.AccessBehavior
     private var excludedBundleIdentifiers: Set<String> = []
+    /// Restored items are written `.currentHostOnly` unless the user opts in to
+    /// sharing them with their other Apple devices through Universal Clipboard.
+    public private(set) var sharesWritesWithOtherDevices = false
+    /// Payloads above this many bytes are skipped instead of being held in memory,
+    /// encoded, hashed and written to disk. Copying is unaffected; only history is.
+    public let maximumCaptureBytes: Int
+
+    public static let defaultMaximumCaptureBytes = 64 * 1024 * 1024
 
     public init(
         pasteboard: NSPasteboard,
         sourceProvider: @escaping () -> ClipboardSource? = { nil },
-        accessBehaviorProvider: (() -> NSPasteboard.AccessBehavior)? = nil
+        accessBehaviorProvider: (() -> NSPasteboard.AccessBehavior)? = nil,
+        maximumCaptureBytes: Int = NSPasteboardBoundary.defaultMaximumCaptureBytes
     ) {
         self.pasteboard = pasteboard
         self.sourceProvider = sourceProvider
         self.accessBehaviorProvider = accessBehaviorProvider ?? { pasteboard.accessBehavior }
+        self.maximumCaptureBytes = max(0, maximumCaptureBytes)
     }
 
     public convenience init(
@@ -106,6 +124,14 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
 
     public func setExcludedBundleIdentifiers(_ identifiers: Set<String>) {
         excludedBundleIdentifiers = identifiers
+    }
+
+    public func setSharesWritesWithOtherDevices(_ shares: Bool) {
+        sharesWritesWithOtherDevices = shares
+    }
+
+    private var writeOptions: NSPasteboard.ContentsOptions {
+        sharesWritesWithOtherDevices ? [] : [.currentHostOnly]
     }
 
     /// `accessBehavior` is metadata, so this reports access policy changes without
@@ -187,7 +213,7 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
             return .failed
         }
 
-        let writeChangeCount = pasteboard.prepareForNewContents(with: [.currentHostOnly])
+        let writeChangeCount = pasteboard.prepareForNewContents(with: writeOptions)
         var didWrite = true
 
         for representation in payload.representations {
@@ -229,7 +255,7 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
             return .failed
         }
 
-        let writeChangeCount = pasteboard.prepareForNewContents(with: [.currentHostOnly])
+        let writeChangeCount = pasteboard.prepareForNewContents(with: writeOptions)
         guard pasteboard.writeObjects(pasteboardItems) else {
             return .failed
         }
@@ -301,12 +327,17 @@ public final class NSPasteboardBoundary: ClipboardPasteboard {
         source: ClipboardSource?
     ) -> PasteboardReadResult {
         var capturedItems = [CapturedItem]()
+        var capturedBytes = 0
         for (item, types) in zip(items, typesByItem) {
             guard types.contains(where: isSupportedCaptureType) else {
                 return .skipped(.unsupported)
             }
             guard let captured = capture(item: item, types: types) else {
                 return .skipped(.malformed)
+            }
+            capturedBytes += captured.payload.byteSize
+            guard capturedBytes <= maximumCaptureBytes else {
+                return .skipped(.tooLarge)
             }
             capturedItems.append(captured)
         }

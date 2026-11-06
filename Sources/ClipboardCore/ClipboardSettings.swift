@@ -43,6 +43,12 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
     public var animationsEnabled: Bool
     public var appearance: ClipboardAppearance
     public var globalShortcut: GlobalClipboardShortcutConfiguration
+    /// Skip text that looks like a password, API key, private key or card number.
+    public var ignoresLikelySecrets: Bool
+    /// When recording is paused for a limited time, the moment it resumes.
+    public var recordingResumeDate: Date?
+    /// Allow items restored from history to reach other devices via Universal Clipboard.
+    public var sharesRestoredItemsWithOtherDevices: Bool
 
     public init(
         retention: ClipboardRetentionSettings = .default,
@@ -52,7 +58,10 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
         launchAtLogin: Bool = false,
         animationsEnabled: Bool = true,
         appearance: ClipboardAppearance = .system,
-        globalShortcut: GlobalClipboardShortcutConfiguration = .default
+        globalShortcut: GlobalClipboardShortcutConfiguration = .default,
+        ignoresLikelySecrets: Bool = true,
+        recordingResumeDate: Date? = nil,
+        sharesRestoredItemsWithOtherDevices: Bool = false
     ) {
         self.retention = retention
         self.recordingPaused = recordingPaused
@@ -62,6 +71,28 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
         self.animationsEnabled = animationsEnabled
         self.appearance = appearance
         self.globalShortcut = globalShortcut
+        self.ignoresLikelySecrets = ignoresLikelySecrets
+        self.recordingResumeDate = recordingResumeDate
+        self.sharesRestoredItemsWithOtherDevices = sharesRestoredItemsWithOtherDevices
+    }
+
+    /// Pauses recording, optionally only until `date`.
+    public mutating func pauseRecording(until date: Date? = nil) {
+        recordingPaused = true
+        recordingResumeDate = date
+    }
+
+    public mutating func resumeRecording() {
+        recordingPaused = false
+        recordingResumeDate = nil
+    }
+
+    /// Whether a timed pause has reached its resume time.
+    public func timedPauseHasEnded(at now: Date) -> Bool {
+        guard recordingPaused, let recordingResumeDate else {
+            return false
+        }
+        return recordingResumeDate <= now
     }
 
     public var isValid: Bool {
@@ -88,6 +119,9 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
         case animationsEnabled
         case appearance
         case globalShortcut
+        case ignoresLikelySecrets
+        case recordingResumeDate
+        case sharesRestoredItemsWithOtherDevices
     }
 
     public init(from decoder: Decoder) throws {
@@ -103,6 +137,12 @@ public struct ClipboardManagerSettings: Codable, Equatable, Sendable {
             GlobalClipboardShortcutConfiguration.self,
             forKey: .globalShortcut
         ) ?? .default
+        ignoresLikelySecrets = try container.decodeIfPresent(Bool.self, forKey: .ignoresLikelySecrets) ?? true
+        recordingResumeDate = try container.decodeIfPresent(Date.self, forKey: .recordingResumeDate)
+        sharesRestoredItemsWithOtherDevices = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .sharesRestoredItemsWithOtherDevices
+        ) ?? false
     }
 }
 
@@ -156,6 +196,27 @@ public final class ClipboardSettingsStore: ObservableObject {
 
     public func clearError() {
         error = nil
+    }
+
+    /// The bundle identifier used before signing was configured. UserDefaults are
+    /// stored per bundle identifier, so changing it would otherwise reset settings.
+    public static let legacyDefaultsDomain = "com.example.ClipboardManager"
+
+    /// Copies saved settings from `legacy` into `defaults` once, when `defaults`
+    /// has none yet. Returns whether anything was copied. Never overwrites.
+    @discardableResult
+    public static func migrateSettings(from legacy: UserDefaults?, to defaults: UserDefaults) -> Bool {
+        guard let legacy,
+              defaults.object(forKey: settingsKey) == nil,
+              let stored = legacy.object(forKey: settingsKey)
+        else {
+            return false
+        }
+        defaults.set(stored, forKey: settingsKey)
+        if let exclusions = legacy.object(forKey: exclusionsRecoveryKey) {
+            defaults.set(exclusions, forKey: exclusionsRecoveryKey)
+        }
+        return true
     }
 
     private func persist(_ settings: ClipboardManagerSettings) {
