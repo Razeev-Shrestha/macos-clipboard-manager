@@ -25,12 +25,11 @@ macOS frameworks only. No accounts, no network, no tracking. Your history stays 
 
 ### **[⬇ Download Clipboard Manager (DMG)](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases/latest/download/ClipboardManager.dmg)**
 
-Requires **macOS 26** or later. Universal app for Apple silicon and Intel. [All releases](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases).
+Requires **macOS 26** or later. Universal app for Apple silicon and Intel. Signed with Developer ID and
+notarized by Apple. [All releases](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases).
 
 1. Open `ClipboardManager.dmg` and drag **Clipboard Manager** to **Applications**.
-2. Launch it. The release is code-signed but not notarized, so macOS first shows a
-   "could not verify" warning. Go to **System Settings › Privacy & Security**, scroll to
-   **Security** and click **Open Anyway**.
+2. Launch it and confirm the standard "downloaded from the Internet" prompt.
 3. Press **`⌘⇧V`** to open your clipboard history.
 4. *(Optional)* For automatic paste, allow Clipboard Manager in
    **System Settings › Privacy & Security › Accessibility**.
@@ -180,10 +179,12 @@ The item appears within about 0.4 seconds. Afterwards, remove only the directory
 
 ## Releasing
 
-Releases are built locally, so the published DMG carries the team signature:
+Releases are built locally, signed with Developer ID and notarized
+(one-time setup in [docs/SIGNING.md](docs/SIGNING.md)):
 
 ```sh
-SIGNING_MODE=development Scripts/package-release.sh      # or developer-id
+SIGNING_MODE=developer-id NOTARY_PROFILE=clipboard-notary REQUIRE_NOTARIZATION=1 \
+  Scripts/package-release.sh
 cp build/Distribution/<run>/ClipboardManager-Release-*.dmg ClipboardManager.dmg
 shasum -a 256 ClipboardManager.dmg > ClipboardManager.dmg.sha256
 git tag -a vX.Y.Z -m "Clipboard Manager vX.Y.Z" && git push origin vX.Y.Z

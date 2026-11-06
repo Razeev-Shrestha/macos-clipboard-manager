@@ -22,6 +22,8 @@ set -euo pipefail
 #   NOTARY_PROFILE=<name>   keychain profile from `xcrun notarytool store-credentials`
 #   NOTARY_KEY_PATH, NOTARY_KEY_ID, NOTARY_ISSUER   App Store Connect API key (CI)
 # Set REQUIRE_NOTARIZATION=1 to fail instead of skipping when none are set.
+# NOTARY_TIMEOUT bounds each notarization wait (default 2h; a team's first
+# submissions can take far longer than the usual few minutes).
 #
 # PACKAGE_ARCHS may be set to a space-separated subset of arm64 and x86_64.
 # The default asks Xcode for a universal app. SIGNING_KEYCHAIN optionally names
@@ -313,7 +315,7 @@ notarize() {
     local submission_log="$run_directory/notary-${label}.json"
     printf 'package-release: submitting %s for notarization (this can take several minutes)\n' "$label"
     if ! xcrun notarytool submit "$artifact" "${notary_arguments[@]}" \
-        --wait --timeout 30m --output-format json > "$submission_log" 2>&1; then
+        --wait --timeout "${NOTARY_TIMEOUT:-2h}" --output-format json > "$submission_log" 2>&1; then
         cat "$submission_log" >&2
         fail "notarization submission failed for $label"
     fi
