@@ -1,204 +1,221 @@
 # Clipboard Manager
 
-Clipboard Manager is a private, local-first macOS clipboard history manager. It
-uses Swift 6, SwiftUI, and native macOS frameworks only.
+A private, local-first clipboard history manager for macOS, built with Swift 6, SwiftUI and native
+macOS frameworks only. No accounts, no network, no tracking. Your history stays on your Mac.
 
-## Full V1 functionality
+[![Latest release](https://img.shields.io/github/v/release/Razeev-Shrestha/macos-clipboard-manager?label=release)](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases/latest)
+![macOS 26+](https://img.shields.io/badge/macOS-26%2B-blue)
+![Apple silicon and Intel](https://img.shields.io/badge/arch-Apple%20silicon%20%7C%20Intel-lightgrey)
+![Swift 6](https://img.shields.io/badge/Swift-6-orange)
 
-Gates A–F are implemented and independently reviewed. All 161 tests pass with Swift warnings
-treated as errors, and clean Debug and universal Release builds pass. The app is packaged for
-public early access with native Liquid Glass chrome and readable clipboard content. See the precise
-[validation evidence and native-environment limits](docs/STATUS.md).
+**Contents:**
+[Download](#download) ·
+[Features](#features) ·
+[Keyboard shortcuts](#keyboard-shortcuts) ·
+[Permissions](#permissions) ·
+[Privacy and security](#privacy-and-security) ·
+[Build from source](#build-from-source) ·
+[Releasing](#releasing) ·
+[Project layout](#project-layout) ·
+[Documentation](#documentation)
 
-Build a verified `.app`, ZIP, and DMG with `Scripts/package-release.sh`. The package supports Apple silicon
-and Intel. It is ad-hoc signed by default; set `SIGNING_MODE=development` to sign with your Apple
-Developer team, or `SIGNING_MODE=developer-id` to sign with Developer ID and notarize for distribution
-outside the App Store. See [signing and distribution](docs/SIGNING.md). Follow the [tester guide](docs/TESTER_GUIDE.md)
-for installation, permissions and keyboard checks. [Performance measurements](docs/PERFORMANCE.md)
-include 1,000-item history, search, large payloads and native idle CPU/memory.
+---
 
 ## Download
 
-**[Download Clipboard Manager (DMG)](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases/latest/download/ClipboardManager.dmg)**
-· [all releases](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases) · requires macOS 26 · Apple silicon and Intel
+### **[⬇ Download Clipboard Manager (DMG)](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases/latest/download/ClipboardManager.dmg)**
+
+Requires **macOS 26** or later. Universal app for Apple silicon and Intel. [All releases](https://github.com/Razeev-Shrestha/macos-clipboard-manager/releases).
 
 1. Open `ClipboardManager.dmg` and drag **Clipboard Manager** to **Applications**.
-2. The release is code-signed but not notarized, so the first launch shows a "could not verify" warning.
-   Open **System Settings › Privacy & Security**, scroll to Security and click **Open Anyway**.
-3. For automatic paste, allow Clipboard Manager in **System Settings › Privacy & Security › Accessibility**.
+2. Launch it. The release is code-signed but not notarized, so macOS first shows a
+   "could not verify" warning. Go to **System Settings › Privacy & Security**, scroll to
+   **Security** and click **Open Anyway**.
+3. Press **`⌘⇧V`** to open your clipboard history.
+4. *(Optional)* For automatic paste, allow Clipboard Manager in
+   **System Settings › Privacy & Security › Accessibility**.
 
-To check the download, compare `shasum -a 256 ClipboardManager.dmg` with the `ClipboardManager.dmg.sha256`
-file attached to the release.
+To verify the download, compare `shasum -a 256 ClipboardManager.dmg` with the
+`ClipboardManager.dmg.sha256` file attached to the release.
 
-### Publishing a release
+## Features
+
+**Capture and history**
+- Records text, links, code, rich text, images, and files/folders (including multi-file copies).
+- Saves history in a local SQLite database. Large items are stored separately and loaded only when you open them.
+- Pin important items. Pinned items are never removed by retention.
+- Retention defaults to 1,000 unpinned items for up to 30 days. Both limits are configurable.
+- Pause recording indefinitely, or for **15 minutes** / **1 hour** with automatic resume, even after sleep or a relaunch.
+
+**Find and paste**
+- A floating panel opens with **`⌘⇧V`** (configurable). Search is focused and the newest item is selected.
+- Full-text search across all retained history, with **All · Text · Code · Links · Images · Files · Pinned** filters.
+- Paste into the app you came from, copy only, or **paste as plain text** without formatting.
+- Preview pane with character/word/line counts, **Open Link** (web links only) and **Reveal in Finder** for files.
+- Rows show the source app's icon, a colour-coded type label and a relative time ("5 min ago").
+
+**Menu bar and settings**
+- Menu bar item: Open Clipboard, Pause/Resume (including timed pauses), Clear History, Settings, Help, Quit.
+- Settings cover: global shortcut, launch at login, menu bar icon (hiding it falls back to the Dock), retention,
+  appearance, animations, excluded apps (pick them from Applications), sensitive-content filtering and
+  Universal Clipboard sharing.
+- Native Liquid Glass design that respects Light/Dark Mode, Reduce Transparency, Increase Contrast and Reduce Motion.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘⇧V` | Show or hide the clipboard panel (configurable) |
+| `↑` `↓` | Move the selection |
+| `Return` / double-click | Paste the selected item into the previous app |
+| `⌥Return` | Paste as plain text (no formatting) |
+| `⌘Return` | Copy to the clipboard without pasting |
+| `⌘1` … `⌘9` | Paste the 1st–9th visible item |
+| `Space` or `→` | Toggle the preview |
+| `⌘P` | Pin or unpin |
+| `⌘Delete` | Delete (asks for confirmation) |
+| `⌘K` | Clear and focus search |
+| `⌘,` | Settings |
+| `Esc` | Close the panel and return to the previous app |
+
+Right-click any row for Paste, Paste as Plain Text, Copy, Pin and Delete.
+
+## Permissions
+
+| Permission | Needed for | Without it |
+| --- | --- | --- |
+| **Clipboard access** (macOS prompt) | Reading new copies | The app explains how to enable it in System Settings |
+| **Accessibility** | Automatic paste (`Return`, `⌘1`–`⌘9`) | Items are copied, and you press `⌘V` yourself |
+
+Opening the panel and copy-only never ask for Accessibility. Choosing **Paste** or
+**Enable Accessibility** may show the macOS prompt. After installing a build with a different signature,
+re-enable the app under Accessibility once.
+
+## Privacy and security
+
+- **Local only.** No network access, no analytics, no accounts. Clipboard contents are never logged.
+- **Sensitive content is skipped.** Content flagged as concealed or transient (for example by password
+  managers) is never recorded. Neither is anything from apps you exclude. Text that looks like a private
+  key, access token, API key (AWS, GitHub, GitLab, Slack, Stripe, OpenAI/Anthropic, Google), JWT or payment
+  card number is skipped too. Turn the last check off in Settings › Privacy › Sensitive content.
+- **Deleted means deleted.** SQLite `secure_delete` and FTS5 `secure-delete` overwrite removed history
+  instead of leaving it recoverable in free pages or search-index segments.
+- **Private storage.** The history folder is owner-only (`0700`) and its files are `0600`. A symbolic-link
+  folder is refused, and the folder is excluded from Time Machine and Spotlight.
+- **Bounded captures.** Items over 64 MB are not recorded, and search indexes at most 200,000 characters
+  per item.
+- **Universal Clipboard is opt-in.** Items pasted from history are written for this Mac only, unless you
+  turn on Settings › Privacy › **Share pasted items with my other devices**. History never syncs.
+
+History is stored at `~/Library/Application Support/com.example.ClipboardManager/`.
+
+**Known limitation:** the source app is taken to be the frontmost app when a copy is noticed. So excluding
+an app is best-effort for background tools (such as `pbcopy`) that copy without the
+`org.nspasteboard.source` marker.
+
+## Build from source
+
+**Requirements:** Xcode 26.6 or later with the macOS 26 SDK. Prefix commands with
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` if the Command Line Tools are selected.
+
+```sh
+# Run the test suite (187 tests)
+swift test -Xswiftc -warnings-as-errors
+
+# Build and run the app
+xcodebuild -project ClipboardManager.xcodeproj -scheme ClipboardManager \
+  -configuration Debug -destination 'platform=macOS' -derivedDataPath build/DerivedData build
+open "build/DerivedData/Build/Products/Debug/Clipboard Manager.app"
+```
+
+Or open `ClipboardManager.xcodeproj` in Xcode and run the shared **ClipboardManager** scheme.
+
+### Signing
+
+Builds are ad-hoc signed unless you add your team. Copy `Config/Signing.local.xcconfig.example` to
+`Config/Signing.local.xcconfig` (gitignored) and set `DEVELOPMENT_TEAM`. A team-signed build keeps the
+Accessibility permission across rebuilds. See **[docs/SIGNING.md](docs/SIGNING.md)** for Apple Development,
+Developer ID and notarization.
+
+### Package a DMG
+
+```sh
+Scripts/package-release.sh                              # ad-hoc
+SIGNING_MODE=development Scripts/package-release.sh     # signed with your team
+SIGNING_MODE=developer-id NOTARY_PROFILE=<profile> \
+  REQUIRE_NOTARIZATION=1 Scripts/package-release.sh     # Developer ID + notarized
+```
+
+The script runs the tests and builds a universal Release app. It verifies the signature, architectures and
+icon resources in the app, the ZIP and the DMG. Output goes to `build/Distribution/<run>/`, with checksums
+and build metadata.
+
+<details>
+<summary><b>Debug-only isolated smoke test</b> (never touches your real clipboard or history)</summary>
+
+Debug builds accept launch arguments that switch to a private named pasteboard and a separate store:
+
+```text
+--test-pasteboard com.example.ClipboardManager.smoke
+--test-storage-directory /tmp/ClipboardManager-smoke
+```
+
+- `--test-storage-directory` must be absolute and requires a non-general `--test-pasteboard`. Malformed
+  flags stop the app before it opens the general pasteboard or the real store.
+- These runs only copy and never auto-paste, unless `--test-paste-target-app-path` names the dedicated
+  synthetic probe app.
+- The flags are compiled out of Release builds, and the packaging script checks that.
+
+To add a synthetic item, pause in Xcode and run:
+
+```swift
+expr -l Swift -- import AppKit
+expr -l Swift -- let board = NSPasteboard(name: NSPasteboard.Name("com.example.ClipboardManager.smoke")); board.clearContents(); board.setString("Smoke item", forType: .string)
+```
+
+The item appears within about 0.4 seconds. Afterwards, remove only the directory you created:
+`rm -rf /tmp/ClipboardManager-smoke`.
+
+</details>
+
+## Releasing
 
 Releases are built locally, so the published DMG carries the team signature:
 
 ```sh
-SIGNING_MODE=development Scripts/package-release.sh      # or developer-id, see docs/SIGNING.md
+SIGNING_MODE=development Scripts/package-release.sh      # or developer-id
 cp build/Distribution/<run>/ClipboardManager-Release-*.dmg ClipboardManager.dmg
 shasum -a 256 ClipboardManager.dmg > ClipboardManager.dmg.sha256
-gh release create vX.Y.Z ClipboardManager.dmg ClipboardManager.dmg.sha256 --title "Clipboard Manager vX.Y.Z"
+git tag -a vX.Y.Z -m "Clipboard Manager vX.Y.Z" && git push origin vX.Y.Z
+gh release create vX.Y.Z ClipboardManager.dmg ClipboardManager.dmg.sha256 --verify-tag \
+  --title "Clipboard Manager vX.Y.Z" --latest
 ```
 
-The download link above always serves the newest release's `ClipboardManager.dmg`. Pushing a `v*` tag
-also runs GitHub Actions, which never replaces a DMG already attached to the release; without one it
-publishes an ad-hoc build. Manual workflow runs only produce a workflow artifact.
+Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in the Xcode project first. The download link always
+serves the latest release's `ClipboardManager.dmg`. Pushing a `v*` tag also starts GitHub Actions, which
+never replaces a DMG already attached to the release; if none is attached, it publishes an ad-hoc build.
 
-The bundled app icon uses Apple's native Icon Composer format for macOS 26
-appearance modes and Retina sizes. The menu-bar icon uses a transparent monochrome
-template of the same clipboard design.
-See [icon artwork, provenance, and editing instructions](docs/ICON_DESIGN.md).
-
-The app stores accepted text, URLs, practical rich text, images, and ordered file/folder references in local SQLite history at
-`~/Library/Application Support/com.example.ClipboardManager/history.sqlite`.
-It opens storage asynchronously, keeps normal history rows metadata-only, and
-queries SQLite for the visible list. Large payloads use private local blob files and are loaded only when selected. Search includes retained history rather
-than an in-memory subset; the UI provides All, Text, Code, Links, Images,
-Files, and Pinned filters.
-
-Accepted captures are written serially. The visible list updates only after a
-write is durable, and normal quit stops monitoring, flushes queued writes, then
-closes the database. If local storage cannot be opened or a write/query fails,
-recording stops and the UI shows a generic storage error; it does not claim the
-failed capture was saved.
-
-The app now opens in a reusable floating utility panel and registers `⌘⇧V` to
-show or hide it. The panel opens with search focused and the newest visible item
-selected; reopening the app from the Dock also shows it. If another application
-already owns `⌘⇧V`, the panel remains available from the Dock and explains the
-shortcut conflict.
-
-`↑` and `↓` select visible results, `⌘K` clears and refocuses search, `Space`
-or `→` opens the preview after list navigation or pointer selection, and `Esc` closes the panel
-and restores the previously active application when it is still appropriate.
-`Return`, double-click, and `⌘1` through `⌘9` restore the chosen item, close the
-panel, and request a normal paste into the remembered application when it is
-still the active destination and macOS permits input synthesis. `⌘Return`
-and preview Copy restore the clipboard without requesting automatic paste.
-If paste cannot proceed, the copied item remains available for manual `⌘V`.
-A newer clipboard write is respected; the app asks you to choose the item again.
-
-Opening the panel and using copy-only never request Accessibility permission.
-Choosing Paste or Enable Accessibility may show the macOS permission prompt.
-The app remains useful without this permission. Posting a paste request does
-not guarantee that the destination accepts it.
-
-The menu-bar item provides Open Clipboard, Pause/Resume, Clear History, Settings, Help and Quit.
-Normal macOS application menus appear while Clipboard, Settings, or Help is open.
-Open Settings from the panel’s gear button or `⌘ ,`; use **← Clipboard** to return to history. Settings include a configurable shortcut, native launch at login, menu-bar visibility, retention count and age,
-recording pause, appearance and tab animation controls, and excluded bundle identifiers. Hiding the menu icon enables a Dock fallback.
-`⌘P` pins or unpins the selection. `⌘Delete` and preview Delete request confirmation; clearing
-can retain pins or remove all history. Default retention keeps at most 1,000 unpinned items for
-30 days. Concealed/transient content and excluded sources are checked before normal payload reads.
-If macOS denies clipboard access, the app shows guidance to enable it in System Settings.
-
-`ClipboardCore` lives in `Sources/ClipboardCore`; its tests live in
-`Tests/ClipboardCoreTests`. The Xcode app target links and imports that local
-package through a small lifecycle controller.
-
-## Privacy and security
-
-- **Sensitive content is skipped.** Besides concealed/transient pasteboard markers and excluded apps,
-  copied text that looks like a private key, access token, API key (AWS, GitHub, GitLab, Slack, Stripe,
-  OpenAI/Anthropic, Google), JWT or payment card number is not saved. Turn this off in
-  Settings › Privacy › Sensitive content.
-- **Deleted means deleted.** SQLite `secure_delete` and FTS5 `secure-delete` overwrite removed history
-  instead of leaving it in free pages or search-index segments. Clearing history also compacts the index.
-- **Private storage.** The history folder is owner-only (`0700`), files are `0600`, a symbolic-link folder
-  is refused, and the folder is excluded from Time Machine and Spotlight.
-- **Bounded captures.** Pasteboard payloads over 64 MB are not recorded, and search indexes at most
-  200,000 characters per item, so a huge copy cannot exhaust memory or disk.
-- Source-app attribution uses the frontmost app when a change is observed, so exclusions are best-effort
-  for background tools (for example `pbcopy`) that write without the `org.nspasteboard.source` marker.
-
-## Additional shortcuts
-
-- `⌥Return` (or **Paste as Plain Text** in a row's context menu or the preview) pastes text without
-  formatting. The history item itself keeps its formatting.
-- Pause recording for **15 minutes** or **1 hour** from the menu bar, the panel's timer button, or Settings.
-  Recording resumes automatically, including after sleep or relaunch.
-- Rows show the source app's icon, a type label and a relative time. The preview shows character, word and
-  line counts, plus **Open Link** for web links and **Reveal in Finder** for copied files.
-- In Settings › Privacy, **Choose App…** adds excluded apps without typing bundle identifiers.
-- **Universal Clipboard (opt-in).** Items restored from history are written for this Mac only by
-  default. Turn on Settings › Privacy › **Share pasted items with my other devices** to let them reach
-  your iPhone, iPad or other Macs through Handoff. History itself never leaves this Mac.
-
-## Development
-
-This project requires Xcode 26.6 or later with the macOS 26 SDK. The system
-Command Line Tools may remain selected; select Xcode only for individual build
-commands:
-
-```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild -project ClipboardManager.xcodeproj \
-  -scheme ClipboardManager \
-  -configuration Debug \
-  -destination 'platform=macOS' \
-  build
-```
-
-Run the package test suite:
-
-```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
-```
-
-Open `ClipboardManager.xcodeproj` in Xcode and choose the shared
-`ClipboardManager` scheme to build or run the app shell.
-
-### Debug-only isolated persistence smoke test
-
-For a UI smoke test without reading your general clipboard or touching the
-production database, add these Debug launch arguments in the shared scheme:
+## Project layout
 
 ```text
---test-pasteboard com.example.ClipboardManager.smoke
---test-storage-directory /tmp/ClipboardManager-GateE-smoke
+App/                     SwiftUI/AppKit app: panel, settings, menu bar, app delegate
+Sources/ClipboardCore/   Clipboard monitoring, history, search, paste coordination, settings
+  Persistence/           SQLite repository and blob storage
+  System/                Panel window, global shortcut, auto-paste, launch at login
+Tests/ClipboardCoreTests XCTest suite for ClipboardCore
+Config/                  Signing xcconfig (+ gitignored local overrides)
+Scripts/                 Release packaging and performance measurement
+Assets/                  App icon (Icon Composer) and source artwork
+docs/                    Design, status, signing, performance and tester docs
 ```
 
-Build the Debug app first:
+## Documentation
 
-```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild -project ClipboardManager.xcodeproj \
-  -scheme ClipboardManager \
-  -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath build/DerivedData \
-  CODE_SIGNING_ALLOWED=YES build
-```
-
-The named board uses a stable private temporary store when no storage directory
-is supplied. `--test-storage-directory` must be absolute and is accepted only
-with a non-general `--test-pasteboard`; malformed test flags terminate the
-Debug app before it can open the general pasteboard or production store.
-Named-board runs always use copy-only fallback unless an explicit
-`--test-paste-target-app-path` identifies the dedicated synthetic native editor.
-The target must match its expected bundle identifier and exact application path.
-This restriction prevents a smoke test from issuing paste into normal apps.
-
-While paused at a breakpoint in the running app, use Xcode's debug console to
-write synthetic text to that named board, then resume so the monitor can poll:
-
-```swift
-expr -l Swift -- import AppKit
-expr -l Swift -- let board = NSPasteboard(name: NSPasteboard.Name("com.example.ClipboardManager.smoke")); board.clearContents(); board.setString("Gate E smoke item", forType: .string)
-```
-
-Within about 0.4 seconds, `Gate E smoke item` should appear in the floating
-panel. Use `⌘⇧V` to hide and show the panel, and select the row with `↓` then
-press `⌘Return` to verify explicit copy-only restoration on the isolated board.
-Return also copies and closes in this run, with fallback guidance on reopening.
-Quit normally, relaunch with the same two arguments, and verify that the row
-and a matching search result remain. The arguments are absent from Release
-builds and no test board is pre-seeded.
-
-After this synthetic smoke test, remove only the exact synthetic directory you
-created:
-
-```bash
-rm -rf /tmp/ClipboardManager-GateE-smoke
-```
+| Document | Contents |
+| --- | --- |
+| [docs/SIGNING.md](docs/SIGNING.md) | Signing modes, Developer ID, notarization, CI secrets |
+| [docs/TESTER_GUIDE.md](docs/TESTER_GUIDE.md) | Installation, permissions and keyboard checks |
+| [docs/STATUS.md](docs/STATUS.md) | Validation evidence and native-environment limits |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | 1,000-item history, search, large payloads, idle CPU/memory |
+| [docs/ICON_DESIGN.md](docs/ICON_DESIGN.md) | Icon artwork, provenance and editing |
+| [REQUIREMENT.md](REQUIREMENT.md) · [DESIGN.md](DESIGN.md) · [AGENT.md](AGENT.md) | Product requirements, design system, contributor rules |
